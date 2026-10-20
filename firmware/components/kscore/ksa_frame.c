@@ -17,13 +17,14 @@ uint8_t ksa_crc8(const uint8_t *data, size_t len)
 static bool args_ok(uint8_t op, const uint8_t *args, size_t n)
 {
     switch (op) {
-    case KSA_OP_POWER:  return n == 1;
-    case KSA_OP_RGB:    return n == 4;
-    case KSA_OP_EFFECT: return n == 3;
-    case KSA_OP_WHITE:  return n == 1;
-    case KSA_OP_ACK:    return n == 0;
+    case KSA_OP_POWER:  return n == 1 || n == 2;
+    case KSA_OP_RGB:    return n == 4 || n == 5;
+    case KSA_OP_EFFECT: return n == 3 || n == 4;
+    case KSA_OP_WHITE:  return n == 1 || n == 2;
+    case KSA_OP_ACK:    return n == 0 || n == 1;
     case KSA_OP_SIGNAL:
-        if (n < 2 || n > 2 + KSA_SIGNAL_NAME_MAX || args[1] >= KSA_SIG_COUNT) return false;
+        if (n < 2 || n > 2 + KSA_SIGNAL_NAME_MAX) return false;
+        if ((args[1] & 0x0F) >= KSA_SIG_COUNT || (args[1] >> 4) > KSA_MAX_LAMPS) return false;
         for (size_t i = 2; i < n; i++) {
             if (args[i] < 0x20 || args[i] > 0x7E) return false; // printable ASCII only
         }
@@ -51,4 +52,16 @@ int ksa_cmd_from_body(const uint8_t *body, size_t len, ksa_cmd_t *cmd)
     cmd->nargs = nargs;
     memcpy(cmd->args, body + 1, nargs);
     return 0;
+}
+
+uint8_t ksa_cmd_lamps(const ksa_cmd_t *c)
+{
+    static const uint8_t base_args[7] = {0, 1, 4, 3, 1, 0, 0};
+    const uint8_t all = (1u << KSA_MAX_LAMPS) - 1;
+    if (c->op >= sizeof base_args || c->op == KSA_OP_SIGNAL) return all;
+    if (c->nargs > base_args[c->op]) {
+        uint8_t m = c->args[base_args[c->op]] & all;
+        return m ? m : all;
+    }
+    return all;
 }

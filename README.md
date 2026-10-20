@@ -37,11 +37,12 @@ before plugging it into a managed machine.
 | --- | --- |
 | Audio decoder + framing | **Host-tested**: Opus 32/16/12k-voip, AAC, MP3, 0.7% clock error, -45 dB, chime mid-frame, 60 s of junk → 0 false commands. Single channel survives Opus 6 kbps and 6 dB SNR. |
 | Simultaneous channels (`test/multichannel.py`) | 1–2 at once: 100% through Opus ≥16k and AAC. 4 at once: 98–100% at Opus ≥24k, 71% at 16k. Opus 12k "voip" mode can't handle overlap. 0 false frames in 2000 decodes. |
-| Signal/ack/expiry logic | **Host-tested** (`test/test_logic.c`) |
+| Signal/ack/expiry logic, lamp mapping | **Host-tested** (`test/test_logic.c`): auto-assign, pinning, overflow, per-lamp acks and colors |
 | Card applet + CCID messages | **Host-tested** with the exact APDUs `ks.py` sends, incl. a Windows-style PIV probe |
 | KS packets | Match upstream `golden_packets.json` |
 | Screen | Rendered on the host from the same C (`test/ui_preview.py` → `docs/`) |
 | Both firmwares | **Build clean** on ESP-IDF v5.4.2 (zero warnings in our code). **Not yet run on hardware.** |
+| Multi-lamp BLE | Up to 4 simultaneous connections (`CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4`); claim flow and NVS persistence compile but are untested on hardware. |
 | Board pins | LCD 3/5/4/2/1, backlight 38, LED 40/39 come from LILYGO's own examples. The BOOT button is assumed to be GPIO0. |
 | RDP behaviour | Unverified: whether multiple sessions share one redirected reader cleanly, which audio codec/bitrate RDP uses, and per-app audio routing. |
 
@@ -63,6 +64,14 @@ idf.py build flash monitor
 Expect `found 'KS03~....' -> profile KS03~`, the strip cycling colors, and
 every 4th step a fake "demo!" agent asking for you. Lumi goes amber and
 bounces. Press **BOOT** to ack: she gets a heart.
+
+**1b. Lamps.** A fresh dongle claims the nearest KS lamp by itself (strongest
+signal over a 4 s window) and remembers it. For a second strip, hold that strip
+near the dongle and **hold BOOT ~3 s** until the screen says *let go to add a
+lamp*, then release. Lumi asks "hold a lamp close by…", then cheers *lamp 2!*.
+Up to 4 lamps. **Holding 10 s** forgets every lamp and devbox mapping. After
+that the dongle only ever reconnects to its claimed lamps, so housemates' and
+neighbours' strips are safe.
 
 **2. Pick a transport** and flash `firmware/card` or `firmware/audio` normally.
 After that the USB console is gone (TinyUSB owns the port), so to reflash,
@@ -88,6 +97,29 @@ python ks.py ack
 Set `KS_SOURCE=name` to choose how a devbox appears on the screen (default:
 hostname, 8 chars). For audio, set `KS_CHANNEL=0..3` so each devbox gets
 its own channel. The default is a hash of the name, which can collide.
+
+## Lamps × devboxes
+
+Each strip is its own Bluetooth device, so they're addressed separately. Pixels
+*within* a strip aren't: KS controllers only do whole-strip color and effects.
+
+- **One strip per devbox, automatically.** The first devbox to signal gets lamp 1,
+  the next gets lamp 2, and so on. The mapping is sticky across reboots. If it
+  guessed backwards, set `KS_LAMP=2` on a devbox to pin it. A devbox beyond the
+  number of lamps shows on every lamp, so nothing is missed.
+- **Your colors** go to every lamp unless you say otherwise:
+  `ks.py rgb 00c8b4 --lamp 2`, `ks.py off --lamp 1`. Each lamp remembers its
+  own last color for `on`.
+- **Acks:** tapping BOOT acks everything. `ks.py ack --lamp 2` acks just what's on
+  lamp 2, including any unmapped devbox showing there.
+- `ks.py status` (card mode) lists each lamp, whether it's connected, and which
+  devbox is on which lamp.
+
+| BOOT button | does |
+| --- | --- |
+| tap | acknowledge all alerts |
+| hold 3 s | claim another lamp (strongest nearby) |
+| hold 10 s | forget all lamps and devbox mappings |
 
 ## Agents → light
 
@@ -122,12 +154,14 @@ most urgent first.
 
 | op | args |
 | --- | --- |
-| 1 power | on (0/1) |
-| 2 rgb | r, g, b, brightness 0–100 |
-| 3 effect | id 0x82–0x8A, speed 0–100, brightness 1–100 |
-| 4 white | level 0–255 |
-| 5 signal | source id (crc8 of name), state 0–4, name (0–8 ASCII) |
-| 6 ack | — |
+| 1 power | on (0/1), [lamp mask] |
+| 2 rgb | r, g, b, brightness 0–100, [lamp mask] |
+| 3 effect | id 0x82–0x8A, speed 0–100, brightness 1–100, [lamp mask] |
+| 4 white | level 0–255, [lamp mask] |
+| 5 signal | source id (crc8 of name), lamp<<4 \| state (lamp 0 = auto), name (0–8 ASCII) |
+| 6 ack | [lamp mask] |
+
+Lamp mask: bit *i* = lamp *i*+1; absent or 0 = every lamp.
 
 **Audio**: body + CRC-8 (poly 0x07), one tone pair per nibble (50 ms tone,
 30 ms gap), and a frame ends after ≥150 ms of no tones. Tones sit on an 85 Hz

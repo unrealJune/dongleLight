@@ -8,7 +8,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CORE = os.path.join(os.path.dirname(HERE), "firmware", "components", "kscore")
 W, H, SCALE = 160, 80, 4
 SCENES = ["searching (audio)", "linked, orange", "lamp off: asleep", "devbox-1 needs you",
-          "error + new signal", "acked: heart", "purple fx, 6 agents"]
+          "error + new signal", "acked: heart", "purple fx, 6 agents", "2 lamps, 2 devboxes",
+          "devbox-2 needs you (lamp 2)", "long-press: claiming", "claimed lamp 2", "fresh: nothing claimed"]
 
 
 def build():
@@ -46,7 +47,7 @@ def main(out_dir):
 
     # GIF: a little story, 2.4 s per scene at 20 fps
     gif = []
-    for sc in (1, 3, 5, 2, 6):
+    for sc in (7, 8, 5, 9, 10, 2):
         for f in frames(exe, sc, 0, 48, 50):
             gif.append(Image.fromarray(f).resize((W * 3, H * 3), Image.NEAREST))
     gif[0].save(os.path.join(out_dir, "lumi.gif"), save_all=True, append_images=gif[1:], duration=50, loop=0)

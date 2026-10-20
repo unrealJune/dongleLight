@@ -9,11 +9,14 @@ Two transports reach the dongle on your laptop through RDP:
 Lamp:     ks.py rgb ff8800 [--brightness 40] | on | off | white 200
           ks.py effect purple-breathing [--speed 40]
 Agents:   ks.py signal needs-you|working|done|error|idle [--source NAME]
-          ks.py ack                 # same as pressing the dongle's button
+          ks.py ack [--lamp N]      # same as pressing the dongle's button
           ks.py status              # card only
+Lamps:    manual commands take --lamp N (default: every lamp). Each devbox is
+          auto-assigned its own lamp on first signal; KS_LAMP=N pins it.
 Setup:    ks.py install-hooks [--dry-run]   # wire Claude Code to the light
 
 Env: KS_SOURCE (name shown on the dongle, default: hostname),
+     KS_LAMP (1-4: pin this devbox's signals to a lamp, default: auto),
      KS_CHANNEL (audio channel 0-3, default: from the source name),
      KS_VIA (auto|card|audio).
 """
@@ -78,8 +81,24 @@ def source_id(name):
     return crc8(name.encode())
 
 
-def signal_args(state, name):
-    return [source_id(name), SIGNALS[state], *name.encode()[:NAME_MAX]]
+MAX_LAMPS = 4
+
+
+def signal_args(state, name, lamp=0):
+    """lamp 0 = let the dongle assign one; 1..4 pins this devbox to that lamp."""
+    if not 0 <= lamp <= MAX_LAMPS:
+        raise ValueError("lamp must be 1..%d" % MAX_LAMPS)
+    return [source_id(name), (lamp << 4) | SIGNALS[state], *name.encode()[:NAME_MAX]]
+
+
+def lamp_mask(lamp):
+    """Trailing mask byte for manual ops: [] = every lamp."""
+    return [] if not lamp else [1 << (lamp - 1)]
+
+
+def env_lamp():
+    v = os.environ.get("KS_LAMP", "").strip()
+    return int(v) if v else 0
 
 # ----------------------------------------------------------------- audio
 
@@ -205,19 +224,24 @@ def apdu_status():
 
 
 def parse_status(data):
-    """Status record v1 (see README)."""
-    if len(data) < 8 or data[0] != 1:
-        raise CardError("unexpected status record %s" % data.hex())
+    """Status record v2 (see ksc_card.h)."""
+    if len(data) < 8 or data[0] != 2:
+        raise CardError("unexpected status record %s (update ks.py or the firmware)" % data.hex())
     st = {"link": LINKS.get(data[1], "?"), "desired_gen": data[2] << 8 | data[3],
-          "applied_gen": data[4] << 8 | data[5], "last_result": RESULTS.get(data[6], "?"), "sources": []}
+          "applied_gen": data[4] << 8 | data[5], "last_result": RESULTS.get(data[6], "?"),
+          "sources": [], "lamps": []}
     n, i = data[7], 8
     for _ in range(n):
-        sid, state, acked, nl = data[i:i + 4]
-        name = data[i + 4:i + 4 + nl].decode("ascii", "replace")
-        st["sources"].append({"id": sid, "state": SIGNAL_NAMES.get(state, "?"), "acked": bool(acked), "name": name})
-        i += 4 + nl
-    nl = data[i]
-    st["lamp"] = data[i + 1:i + 1 + nl].decode("ascii", "replace")
+        sid, state, acked, lamp, nl = data[i:i + 5]
+        name = data[i + 5:i + 5 + nl].decode("ascii", "replace")
+        st["sources"].append({"id": sid, "state": SIGNAL_NAMES.get(state, "?"), "acked": bool(acked),
+                              "lamp": lamp or None, "name": name})
+        i += 5 + nl
+    for _ in range(data[i]):
+        flags, nl = data[i + 1], data[i + 2]
+        st["lamps"].append({"claimed": bool(flags & 1), "connected": bool(flags & 2),
+                            "name": data[i + 3:i + 3 + nl].decode("ascii", "replace")})
+        i += 2 + nl
     return st
 
 
@@ -420,25 +444,34 @@ def pct(text):
 
 
 def command(ns):
+    mask = lamp_mask(getattr(ns, "lamp", None))
     if ns.cmd in ("on", "off"):
-        return OP_POWER, [1 if ns.cmd == "on" else 0]
+        return OP_POWER, [1 if ns.cmd == "on" else 0, *mask]
     if ns.cmd == "rgb":
-        return OP_RGB, [*ns.color, ns.brightness]
+        return OP_RGB, [*ns.color, ns.brightness, *mask]
     if ns.cmd == "effect":
-        return OP_EFFECT, [EFFECTS[ns.name], ns.speed, max(1, ns.brightness)]
+        return OP_EFFECT, [EFFECTS[ns.name], ns.speed, max(1, ns.brightness), *mask]
     if ns.cmd == "white":
-        return OP_WHITE, [ns.level]
+        return OP_WHITE, [ns.level, *mask]
     if ns.cmd == "signal":
-        return OP_SIGNAL, signal_args(ns.state, ns.source or source_name())
+        lamp = ns.lamp if ns.lamp is not None else env_lamp()
+        return OP_SIGNAL, signal_args(ns.state, ns.source or source_name(), lamp)
     if ns.cmd == "ack":
-        return OP_ACK, []
+        return OP_ACK, mask
     raise SystemExit("unknown command")
 
 
 def describe(st):
-    lines = ["lamp: %s (%s)" % (st["lamp"] or "-", st["link"]), "last write: %s" % st["last_result"]]
+    lines = []
+    for n, lamp in enumerate(st["lamps"], 1):
+        state = "connected" if lamp["connected"] else "claimed, searching" if lamp["claimed"] else "unclaimed"
+        lines.append("lamp %d: %s (%s)" % (n, lamp["name"] or "-", state))
+    if not st["lamps"]:
+        lines.append("no lamps claimed yet: long-press BOOT near a lamp")
+    lines.append("last write: %s" % st["last_result"])
     for s in st["sources"]:
-        lines.append("  %-8s %s%s" % (s["name"], s["state"], " (acked)" if s["acked"] else ""))
+        where = "lamp %d" % s["lamp"] if s["lamp"] else "all lamps"
+        lines.append("  %-8s %-9s on %s%s" % (s["name"], s["state"], where, " (acked)" if s["acked"] else ""))
     return "\n".join(lines)
 
 
@@ -451,21 +484,27 @@ def main(argv=None):
     ap.add_argument("--no-wait", action="store_true", help="card: don't wait for the lamp to update")
     ap.add_argument("--quiet", "-q", action="store_true", help="no output, never fail (for hooks)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("on")
-    sub.add_parser("off")
-    p = sub.add_parser("rgb")
+
+    def lamp_opt(p, help_text="only this lamp (default: every lamp)"):
+        p.add_argument("--lamp", type=int, choices=range(1, MAX_LAMPS + 1), help=help_text)
+        return p
+
+    lamp_opt(sub.add_parser("on"))
+    lamp_opt(sub.add_parser("off"))
+    p = lamp_opt(sub.add_parser("rgb"))
     p.add_argument("color", type=parse_hex_color)
     p.add_argument("--brightness", type=pct, default=100)
-    p = sub.add_parser("effect")
+    p = lamp_opt(sub.add_parser("effect"))
     p.add_argument("name", choices=sorted(EFFECTS))
     p.add_argument("--speed", type=pct, default=50)
     p.add_argument("--brightness", type=pct, default=100)
-    p = sub.add_parser("white", help="KS03~ white channel, 0..255")
+    p = lamp_opt(sub.add_parser("white", help="KS03~ white channel, 0..255"))
     p.add_argument("level", type=int, choices=range(256), metavar="LEVEL")
-    p = sub.add_parser("signal", help="agent state for this devbox")
+    p = lamp_opt(sub.add_parser("signal", help="agent state for this devbox"),
+                 "pin this devbox to a lamp (default: KS_LAMP or auto)")
     p.add_argument("state", choices=list(SIGNALS))
     p.add_argument("--source", help="name on the dongle screen (default: KS_SOURCE or hostname)")
-    sub.add_parser("ack", help="acknowledge all attention signals")
+    lamp_opt(sub.add_parser("ack", help="acknowledge attention signals"))
     sub.add_parser("status", help="show bridge state (card only)")
     p = sub.add_parser("install-hooks", help="add Claude Code hooks to ~/.claude/settings.json")
     p.add_argument("--dry-run", action="store_true")

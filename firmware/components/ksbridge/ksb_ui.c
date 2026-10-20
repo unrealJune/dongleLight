@@ -112,25 +112,30 @@ static void led_update(const ksui_view_t *v, uint32_t now)
         return;
     }
     uint8_t r, g, b;
-    ksb_scene_rgb(&v->shown, &r, &g, &b);
+    ksb_scene_rgb(&v->shown[0], &r, &g, &b);
     led_rgb(r, g, b);
 }
 #endif
 
 // ---------- button ----------
+// Tap: acknowledge. Hold 3 s: claim another lamp. Hold 10 s: forget everything.
 static void button_poll(void)
 {
 #if CONFIG_KSA_BUTTON_GPIO >= 0
-    static int last = 1;
+    static bool down;
     static uint32_t down_at;
-    int level = gpio_get_level(CONFIG_KSA_BUTTON_GPIO);
+    bool pressed = gpio_get_level(CONFIG_KSA_BUTTON_GPIO) == 0;
     uint32_t now = now_ms();
-    if (level == 0 && last == 1) down_at = now;
-    if (level == 1 && last == 0 && now - down_at > 40) {
-        ESP_LOGI(TAG, "button: acknowledge");
-        ksb_bridge_ack();
+    if (pressed && !down) {
+        down = true;
+        down_at = now;
+    } else if (pressed) {
+        ksb_bridge_button(now - down_at, false);
+    } else if (down) {
+        down = false;
+        if (now - down_at > 40) ksb_bridge_button(now - down_at, true);
+        else ksb_bridge_button(0, false);
     }
-    last = level;
 #endif
 }
 

@@ -20,7 +20,8 @@ static int submit(const ksa_cmd_t *cmd, uint16_t *g, void *ctx)
 static size_t status(uint8_t *out, size_t cap, void *ctx)
 {
     (void)ctx;
-    return ksc_status_encode(out, cap, &model, 2, gen, gen, KSC_RESULT_OK, "KS03~1A2B");
+    ksc_lamp_info_t lamps[2] = {{true, true, "KS03~1A2B"}, {true, false, "KS03~77C0"}};
+    return ksc_status_encode(out, cap, &model, 2, gen, gen, KSC_RESULT_OK, lamps, 2);
 }
 
 static size_t unhex(const char *s, uint8_t *out)
@@ -34,6 +35,7 @@ static size_t unhex(const char *s, uint8_t *out)
 int main(void)
 {
     ksb_init(&model);
+    ksb_set_lamp_count(&model, 2);
     ksc_app_t app = {.submit = submit, .status = status};
     ksc_ccid_t ccid = {.app = &app};
     uint8_t seq = 0, msg[KSC_MAX_MSG + 16], out[KSC_MAX_MSG + 16];

@@ -81,21 +81,28 @@ static void decoder_task(void *arg)
 #else
 static void demo_task(void *arg)
 {
+    // Two fake devboxes take turns: with two lamps claimed, each gets its own.
     static const uint8_t colors[][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 136, 0}};
     for (int i = 0;; i++) {
         ksa_cmd_t c;
-        switch (i % 6) {
-        case 4: // fake an agent asking for you; press BOOT to ack
-            c = (ksa_cmd_t){.op = KSA_OP_SIGNAL, .nargs = 7, .args = {0x42, KSA_SIG_NEEDS_YOU, 'd', 'e', 'm', 'o', '!'}};
+        switch (i % 8) {
+        case 4:
+            c = (ksa_cmd_t){.op = KSA_OP_SIGNAL, .nargs = 7, .args = {0x41, KSA_SIG_NEEDS_YOU, 'd', 'e', 'm', 'o', '1'}};
             break;
         case 5:
+            c = (ksa_cmd_t){.op = KSA_OP_SIGNAL, .nargs = 7, .args = {0x42, KSA_SIG_DONE, 'd', 'e', 'm', 'o', '2'}};
+            break;
+        case 6:
+            c = (ksa_cmd_t){.op = KSA_OP_SIGNAL, .nargs = 2, .args = {0x41, KSA_SIG_IDLE}};
+            break;
+        case 7:
             c = (ksa_cmd_t){.op = KSA_OP_SIGNAL, .nargs = 2, .args = {0x42, KSA_SIG_IDLE}};
             break;
         default:
             c = (ksa_cmd_t){.op = KSA_OP_RGB, .nargs = 4,
                             .args = {colors[i % 4][0], colors[i % 4][1], colors[i % 4][2], 100}};
         }
-        ESP_LOGI(TAG, "demo step %d (op %d)", i % 6, c.op);
+        ESP_LOGI(TAG, "demo step %d (op %d)", i % 8, c.op);
         ksb_bridge_submit(&c, NULL);
         vTaskDelay(pdMS_TO_TICKS(4000));
     }

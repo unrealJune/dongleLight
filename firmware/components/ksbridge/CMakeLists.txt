@@ -3,5 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES kscore
-    PRIV_REQUIRES bt esp_driver_gpio esp_driver_spi esp_lcd esp_timer st7735
+    PRIV_REQUIRES bt esp_driver_gpio esp_driver_spi esp_lcd esp_timer nvs_flash st7735
 )

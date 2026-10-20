@@ -23,11 +23,12 @@ const uint8_t *ksc_atr(size_t *len)
 }
 
 size_t ksc_status_encode(uint8_t *out, size_t cap, const ksb_model_t *m, uint8_t link,
-                         uint16_t desired, uint16_t applied, uint8_t result, const char *lamp)
+                         uint16_t desired, uint16_t applied, uint8_t result,
+                         const ksc_lamp_info_t *lamps, int n_lamps)
 {
     size_t n = 0;
-    if (cap < 9 + KSB_MAX_SOURCES * (4 + KSA_SIGNAL_NAME_MAX) + 1 + 20) return 0;
-    out[n++] = 1;
+    if (cap < 9 + KSB_MAX_SOURCES * (5 + KSA_SIGNAL_NAME_MAX) + 1 + KSB_MAX_LAMPS * 21) return 0;
+    out[n++] = 2;
     out[n++] = link;
     out[n++] = (uint8_t)(desired >> 8);
     out[n++] = (uint8_t)desired;
@@ -43,17 +44,24 @@ size_t ksc_status_encode(uint8_t *out, size_t cap, const ksb_model_t *m, uint8_t
         out[n++] = s->id;
         out[n++] = s->state;
         out[n++] = s->acked;
+        out[n++] = (uint8_t)(ksb_source_lamp(m, i) + 1);
         out[n++] = (uint8_t)nl;
         memcpy(out + n, s->name, nl);
         n += nl;
         count++;
     }
     out[count_at] = count;
-    size_t ll = lamp ? strlen(lamp) : 0;
-    if (ll > 19) ll = 19;
-    out[n++] = (uint8_t)ll;
-    if (ll) memcpy(out + n, lamp, ll);
-    return n + ll;
+    if (n_lamps > KSB_MAX_LAMPS) n_lamps = KSB_MAX_LAMPS;
+    out[n++] = (uint8_t)n_lamps;
+    for (int l = 0; l < n_lamps; l++) {
+        size_t ll = 0;
+        while (ll < sizeof lamps[l].name - 1 && lamps[l].name[ll]) ll++;
+        out[n++] = (uint8_t)((lamps[l].claimed ? 1 : 0) | (lamps[l].connected ? 2 : 0));
+        out[n++] = (uint8_t)ll;
+        memcpy(out + n, lamps[l].name, ll);
+        n += ll;
+    }
+    return n;
 }
 
 // ---------- applet ----------

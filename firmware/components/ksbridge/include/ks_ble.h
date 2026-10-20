@@ -1,25 +1,34 @@
+// NimBLE central for up to KSB_MAX_LAMPS claimed KS lamps.
+//
+// Lamps are claimed, not auto-picked: a claim scans for a few seconds and takes
+// the strongest-signal KS lamp that isn't already claimed. Claimed addresses
+// live in NVS; after that the dongle only ever (re)connects to those. A fresh
+// device with nothing claimed keeps auto-claiming until it finds one lamp.
+// KS lamps take a single connection, so the phone app can't connect while the
+// dongle holds a lamp.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "ksa_protocol.h"
+#include "ksb_logic.h"
 
-// Starts NimBLE and keeps trying to hold one connection to a matching KS lamp.
+typedef enum { KS_CLAIM_IDLE, KS_CLAIM_SEARCHING, KS_CLAIM_OK, KS_CLAIM_NONE_FOUND,
+               KS_CLAIM_FULL, KS_CLAIM_FORGOT } ks_claim_state_t;
+
 void ks_ble_start(void);
 
-// Wait until a lamp is connected and its write characteristic is found.
-// Returns the lamp's profile, or NULL on timeout. *link_gen changes on every
-// new connection (upstream waits 300 ms after connecting before writing).
-const ks_profile_t *ks_ble_wait_ready(int timeout_ms, uint32_t *link_gen);
+int ks_ble_lamp_count(void);   // claimed lamps (slots 0..n-1)
 
-// Write one packet to the lamp's write characteristic. 0 on success.
-int ks_ble_write(const uint8_t *data, size_t len);
+// Profile of a connected, ready lamp, or NULL. *link_gen (optional) changes on
+// every new connection (upstream waits 300 ms after connecting before writing).
+const ks_profile_t *ks_ble_ready(int lamp, uint32_t *link_gen);
 
-// Drop the current link (e.g. after a failed write); scanning resumes.
-void ks_ble_drop(void);
+int ks_ble_write(int lamp, const uint8_t *data, size_t len);  // 0 on success
+void ks_ble_drop(int lamp);                                     // reconnect
 
-// True while connected with the write characteristic found.
-bool ks_ble_ready(void);
+void ks_ble_lamp_name(int lamp, char *out, size_t cap);
 
-// Advertised name of the current/last lamp ("" before the first connection).
-void ks_ble_lamp_name(char *out, size_t cap);
+void ks_ble_claim(void);       // claim one more lamp (strongest nearby)
+void ks_ble_forget_all(void);  // unclaim every lamp
+void ks_ble_claim_status(uint8_t *state, uint8_t *slot, uint32_t *since_ms);

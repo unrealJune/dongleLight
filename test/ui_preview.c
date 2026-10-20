@@ -19,12 +19,16 @@ static void setup(ksui_view_t *v, int sc, uint32_t t0)
     ksb_init(&v->model);
     v->transport = "CARD";
     v->link = KSUI_LINK_CONNECTED;
-    strcpy(v->lamp_name, "KS03~1A2B");
+    v->n_lamps = 1;
+    strcpy(v->lamps[0].name, "KS03~1A2B");
+    v->lamps[0].link = KSUI_LINK_CONNECTED;
+    strcpy(v->lamps[1].name, "KS03~77C0");
+    v->lamps[1].link = KSUI_LINK_CONNECTED;
     ksa_cmd_t c = {.op = KSA_OP_RGB, .nargs = 4, .args = {255, 136, 0, 80}};
     ksb_apply(&v->model, &c, 0);
     v->model.last_event = KSB_EV_NONE;
     switch (sc) {
-    case 0: v->link = KSUI_LINK_SCANNING; v->lamp_name[0] = 0; v->transport = "AUDIO"; break;
+    case 0: v->link = KSUI_LINK_SCANNING; v->lamps[0].link = KSUI_LINK_SCANNING; v->transport = "AUDIO"; break;
     case 1: break;
     case 2: { ksa_cmd_t off = {.op = KSA_OP_POWER, .nargs = 1}; ksb_apply(&v->model, &off, 0); v->model.last_event = KSB_EV_NONE; break; }
     case 3: {
@@ -47,8 +51,24 @@ static void setup(ksui_view_t *v, int sc, uint32_t t0)
         for (int i = 0; i < 6; i++) { ksa_cmd_t s = sig((uint8_t)(10 + i), KSA_SIG_WORKING, names[i]); ksb_apply(&v->model, &s, (uint32_t)i); }
         v->model.last_event = KSB_EV_NONE; break;
     }
+    case 7: case 8: { // two lamps, two devboxes; 8 = lamp 2's devbox needs you
+        v->n_lamps = 2;
+        ksb_set_lamp_count(&v->model, 2);
+        ksa_cmd_t a = sig(0xA1, KSA_SIG_WORKING, "devbox-1"), b = sig(0xB2, KSA_SIG_WORKING, "devbox-2");
+        ksb_apply(&v->model, &a, 0); ksb_apply(&v->model, &b, 0);
+        ksa_cmd_t teal2 = {.op = KSA_OP_RGB, .nargs = 5, .args = {0, 200, 180, 70, 0x02}};
+        ksb_apply(&v->model, &teal2, 0);
+        if (sc == 8) { ksa_cmd_t n = sig(0xB2, KSA_SIG_NEEDS_YOU, "devbox-2"); ksb_apply(&v->model, &n, 0); }
+        v->model.last_event = KSB_EV_NONE; break;
     }
-    ksb_desired(&v->model, &v->shown);
+    case 9: // claiming lamp 2
+        v->claim = KSUI_CLAIM_SEARCHING; v->claim_slot = 1; v->claim_ms = 0; break;
+    case 10: // claimed lamp 2
+        v->n_lamps = 2; v->claim = KSUI_CLAIM_OK; v->claim_slot = 1; v->claim_ms = t0; break;
+    case 11: // fresh device, nothing claimed
+        v->n_lamps = 0; v->link = KSUI_LINK_SCANNING; break;
+    }
+    for (int l = 0; l < KSB_MAX_LAMPS; l++) ksb_desired(&v->model, l, &v->shown[l]);
 }
 
 static int run(char **argv);

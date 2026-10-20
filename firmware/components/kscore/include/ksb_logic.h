@@ -1,9 +1,11 @@
 // Lamp state model, portable and host-tested.
 //
-// Two layers decide what the strip shows:
-//   base     what you set by hand (power / rgb / effect / white)
-//   sources  agent signals from devboxes; the most urgent unacknowledged one
-//            overlays the base until it is acked, cleared or expires
+// Each lamp shows two layers:
+//   base     what you set by hand (power / rgb / effect / white), per lamp
+//   signals  agent states from devboxes. Each devbox is mapped to one lamp
+//            (auto-assigned in order of first signal, sticky, or pinned by the
+//            devbox); unmapped devboxes overlay every lamp. The most urgent
+//            unacknowledged signal for a lamp overrides its base.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -16,6 +18,7 @@ extern "C" {
 #endif
 
 #define KSB_MAX_SOURCES 8
+#define KSB_MAX_LAMPS KSA_MAX_LAMPS
 #define KSB_DONE_TTL_MS (2u * 60u * 1000u)
 #define KSB_WORKING_TTL_MS (4u * 60u * 60u * 1000u)
 #define KSB_ACKED_TTL_MS (10u * 60u * 1000u)
@@ -41,38 +44,49 @@ typedef struct {
 typedef enum { KSB_EV_NONE, KSB_EV_MANUAL, KSB_EV_SIGNAL, KSB_EV_ACK, KSB_EV_BAD } ksb_event_kind_t;
 
 typedef struct {
-    ksb_scene_t base;
-    ksb_scene_t last_on;        // restored by "power on"
+    ksb_scene_t base[KSB_MAX_LAMPS];
+    ksb_scene_t last_on[KSB_MAX_LAMPS];  // restored by "power on"
     ksb_source_t src[KSB_MAX_SOURCES];
-    uint8_t last_event;         // ksb_event_kind_t, for the screen
-    int8_t last_event_src;      // source index or -1
+    uint8_t n_lamps;                     // claimed lamps (set by the firmware)
+    uint8_t lamp_src[KSB_MAX_LAMPS];     // devbox id mapped to each lamp
+    uint8_t lamp_src_valid;              // bitmask of lamps with a mapping
+    bool map_dirty;                      // mapping changed: persist it
+    uint8_t last_event;                  // ksb_event_kind_t, for the screen
+    int8_t last_event_src;               // source index or -1
     uint32_t last_event_ms;
 } ksb_model_t;
 
 void ksb_init(ksb_model_t *m);
+void ksb_set_lamp_count(ksb_model_t *m, uint8_t n);
+void ksb_clear_map(ksb_model_t *m);
 
-// Apply a validated command. Returns false for ops the model doesn't own.
+// Apply a validated command. Returns false for ops/args the model rejects.
 bool ksb_apply(ksb_model_t *m, const ksa_cmd_t *cmd, uint32_t now_ms);
 
-// Acknowledge every attention signal (button press or KSA_OP_ACK).
-void ksb_ack_all(ksb_model_t *m, uint32_t now_ms);
+// Acknowledge attention signals shown on the lamps in `mask` (0x0F = all).
+void ksb_ack(ksb_model_t *m, uint8_t mask, uint32_t now_ms);
+static inline void ksb_ack_all(ksb_model_t *m, uint32_t now_ms) { ksb_ack(m, 0x0F, now_ms); }
 
 // Expire stale sources. Call about once a second.
 void ksb_tick(ksb_model_t *m, uint32_t now_ms);
 
-// Index of the source currently overriding the lamp, or -1 for the base scene.
-int ksb_top_source(const ksb_model_t *m);
+// Lamp a source is mapped to, or -1 (unmapped: shows on every lamp).
+int ksb_source_lamp(const ksb_model_t *m, int src_index);
 
-// What the strip should show right now.
-void ksb_desired(const ksb_model_t *m, ksb_scene_t *out);
+// Most urgent unacked source shown on `lamp`, or -1. lamp = -1: across all lamps.
+int ksb_top_source_for(const ksb_model_t *m, int lamp);
+static inline int ksb_top_source(const ksb_model_t *m) { return ksb_top_source_for(m, -1); }
+
+// What `lamp` should show right now.
+void ksb_desired(const ksb_model_t *m, int lamp, ksb_scene_t *out);
 
 bool ksb_scene_eq(const ksb_scene_t *a, const ksb_scene_t *b);
 
 // Display color for a scene (what the screen creature glows), brightness applied.
 void ksb_scene_rgb(const ksb_scene_t *s, uint8_t *r, uint8_t *g, uint8_t *b);
 
-// Packets that put the lamp into `s` for profile `p`. Effects/white fall back to
-// static colors on standard-format lamps. Returns packet count (0..2).
+// Packets that put a lamp into `s` for profile `p`. Effects/white fall back to
+// static colors on standard-format lamps. Returns packet count (1..2).
 int ksb_packets(const ks_profile_t *p, const ksb_scene_t *s,
                 uint8_t pkt[2][KS_MAX_PACKET], size_t len[2]);
 

@@ -133,9 +133,17 @@ static void heart(int x, int y, rgb_t c)
     px(x + 3, y + 5, c);
 }
 
+// Lamp Lumi mirrors: the one showing the most urgent signal, else lamp 1.
+static int focus_lamp(const ksui_view_t *v)
+{
+    int top = ksb_top_source(&v->model);
+    int l = top >= 0 ? ksb_source_lamp(&v->model, top) : -1;
+    return l >= 0 && l < KSB_MAX_LAMPS ? l : 0;
+}
+
 static rgb_t body_color(const ksui_view_t *v, uint32_t now, bool *asleep)
 {
-    const ksb_scene_t *s = &v->shown;
+    const ksb_scene_t *s = &v->shown[focus_lamp(v)];
     uint8_t r, g, b;
     ksb_scene_rgb(s, &r, &g, &b);
     rgb_t c = {r, g, b};
@@ -165,6 +173,11 @@ static void draw_lumi(const ksui_view_t *v, uint32_t now)
     bool excited = m->last_event != KSB_EV_NONE && since_ev < 900 &&
                    (m->last_event == KSB_EV_MANUAL || m->last_event == KSB_EV_SIGNAL);
     bool loved = m->last_event == KSB_EV_ACK && since_ev < 1500;
+    uint32_t since_claim = now - v->claim_ms;
+    bool claiming = v->claim == KSUI_CLAIM_SEARCHING;
+    if (v->claim == KSUI_CLAIM_OK && since_claim < 2500) loved = excited = true, since_ev = since_claim % 900;
+    if ((v->claim == KSUI_CLAIM_NONE_FOUND || v->claim == KSUI_CLAIM_FULL) && since_claim < 2500) error = true;
+    scanning = scanning || claiming;
     bool asleep;
     rgb_t body = body_color(v, now, &asleep);
     asleep = asleep && !scanning && !needs_you;
@@ -249,6 +262,7 @@ static void draw_lumi(const ksui_view_t *v, uint32_t now)
         }
     }
     if (loved) heart(62, (int)(18 - (float)since_ev / 150.0f), (rgb_t){255, 110, 150});
+    if (claiming && wave(now, 800) > 0.3f) text(64, 14, "?", (rgb_t){80, 140, 255});
 }
 
 static void scene_label(const ksb_scene_t *s, char *out, size_t n)
@@ -265,6 +279,76 @@ static void scene_label(const ksb_scene_t *s, char *out, size_t n)
     }
 }
 
+static rgb_t scene_swatch(const ksb_scene_t *s)
+{
+    uint8_t r, g, b;
+    ksb_scene_rgb(s, &r, &g, &b);
+    return (rgb_t){r, g, b};
+}
+
+static void draw_lamp_row(const ksui_view_t *v, int x0, int y, uint32_t now)
+{
+    if (v->n_lamps == 0) {
+        text(x0, y, "no lamp yet", DIM);
+        return;
+    }
+    for (int l = 0; l < v->n_lamps && l < KSB_MAX_LAMPS; l++) {
+        int x = x0 + l * 19;
+        char digit[2] = {(char)('1' + l), 0};
+        text(x, y, digit, DIM);
+        rgb_t ring = v->lamps[l].link == KSUI_LINK_CONNECTED ? (rgb_t){90, 230, 130}
+                   : mix(BG, (rgb_t){80, 140, 255}, wave(now + (uint32_t)l * 250, 1000) > 0.5f ? 1.0f : 0.3f);
+        rect(x + 7, y - 1, 9, 9, ring);
+        rect(x + 8, y, 7, 7, BG);
+        rect(x + 9, y + 1, 5, 5, scene_swatch(&v->shown[l]));
+    }
+}
+
+static bool draw_claim(const ksui_view_t *v, int x0, uint32_t now)
+{
+    uint32_t since = now - v->claim_ms;
+    char buf[24];
+    if (v->button_held_ms >= KSUI_HOLD_FORGET_MS) {
+        text(x0, 13, "let go to", (rgb_t){255, 70, 70});
+        text(x0, 23, "FORGET ALL", (rgb_t){255, 70, 70});
+        return true;
+    }
+    if (v->button_held_ms >= KSUI_HOLD_CLAIM_MS) {
+        text(x0, 13, "let go to", AMBER);
+        text(x0, 23, "add a lamp", TEXT);
+        return true;
+    }
+    switch (v->claim) {
+    case KSUI_CLAIM_SEARCHING:
+        text(x0, 13, "hold a lamp", AMBER);
+        text(x0, 23, "close by...", TEXT);
+        return true;
+    case KSUI_CLAIM_OK:
+        if (since > 4000) return false;
+        snprintf(buf, sizeof buf, "lamp %d!", v->claim_slot + 1);
+        text(x0, 13, buf, (rgb_t){90, 230, 130});
+        text_clip(x0, 23, v->lamps[v->claim_slot < KSB_MAX_LAMPS ? v->claim_slot : 0].name, 12, DIM);
+        return true;
+    case KSUI_CLAIM_NONE_FOUND:
+        if (since > 4000) return false;
+        text(x0, 13, "no new lamp", (rgb_t){255, 70, 70});
+        text(x0, 23, "found nearby", DIM);
+        return true;
+    case KSUI_CLAIM_FULL:
+        if (since > 4000) return false;
+        text(x0, 13, "all 4 lamps", (rgb_t){255, 70, 70});
+        text(x0, 23, "claimed", DIM);
+        return true;
+    case KSUI_CLAIM_FORGOT:
+        if (since > 4000) return false;
+        text(x0, 13, "forgot lamps", AMBER);
+        text(x0, 23, "& devboxes", DIM);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void draw_panel(const ksui_view_t *v, uint32_t now)
 {
     const ksb_model_t *m = &v->model;
@@ -274,15 +358,19 @@ static void draw_panel(const ksui_view_t *v, uint32_t now)
               : mix(BG, (rgb_t){80, 140, 255}, wave(now, 1000) > 0.5f ? 1.0f : 0.3f);
     disc(153, 6, 2.5f, dot, 1.0f);
 
-    int top = ksb_top_source(m);
-    if (top >= 0 && m->src[top].state == KSA_SIG_NEEDS_YOU) {
-        text_clip(x0, 13, m->src[top].name, 12, AMBER);
-    } else {
-        const char *st = v->link == KSUI_LINK_CONNECTED ? "linked" : v->link == KSUI_LINK_SCANNING ? "searching" : "waking up";
-        text(x0, 13, st, TEXT);
+    if (!draw_claim(v, x0, now)) {
+        int top = ksb_top_source(m);
+        if (top >= 0 && m->src[top].state == KSA_SIG_NEEDS_YOU) {
+            text_clip(x0, 13, m->src[top].name, 12, AMBER);
+        } else {
+            const char *st = v->link == KSUI_LINK_CONNECTED ? "linked"
+                           : v->n_lamps == 0 ? "hold BOOT"
+                           : v->link == KSUI_LINK_SCANNING ? "searching" : "waking up";
+            text(x0, 13, st, TEXT);
+        }
+        draw_lamp_row(v, x0, 24, now);
     }
-    text_clip(x0, 23, v->lamp_name[0] ? v->lamp_name : "no lamp yet", 12, DIM);
-    rect(x0, 33, KSUI_W - x0 - 3, 1, RULE);
+    rect(x0, 34, KSUI_W - x0 - 3, 1, RULE);
 
     // sources, most urgent first
     int order[KSB_MAX_SOURCES], n = 0;
@@ -298,13 +386,12 @@ static void draw_panel(const ksui_view_t *v, uint32_t now)
     }
     if (n == 0) {
         char label[24];
-        scene_label(&v->shown, label, sizeof label);
-        text_clip(x0, 39, label, 12, TEXT);
-        uint8_t r, g, b;
-        ksb_scene_rgb(&v->shown, &r, &g, &b);
-        rect(x0, 50, KSUI_W - x0 - 3, 6, RULE);
-        rect(x0 + 1, 51, (KSUI_W - x0 - 5), 4, (rgb_t){r, g, b});
-        text(x0, 64, "no agents", DIM);
+        scene_label(&v->shown[0], label, sizeof label);
+        text_clip(x0, 40, label, 12, TEXT);
+        int lamps = v->n_lamps ? v->n_lamps : 1, w = (KSUI_W - x0 - 5) / lamps;
+        rect(x0, 51, KSUI_W - x0 - 3, 6, RULE);
+        for (int l = 0; l < lamps; l++) rect(x0 + 1 + l * w, 52, w - (l < lamps - 1 ? 1 : 0), 4, scene_swatch(&v->shown[l]));
+        text(x0, 65, "no agents", DIM);
         return;
     }
     int rows = n > 4 ? 3 : n;
@@ -314,7 +401,14 @@ static void draw_panel(const ksui_view_t *v, uint32_t now)
         rgb_t c = s->acked ? STATE_COLORS[0] : STATE_COLORS[s->state < KSA_SIG_COUNT ? s->state : 0];
         bool blink = !s->acked && s->state == KSA_SIG_NEEDS_YOU && wave(now, 600) < 0.35f;
         if (!blink) rect(x0, y + 1, 5, 5, c);
-        text_clip(x0 + 8, y, s->name, 11, s->acked ? DIM : TEXT);
+        int lamp = ksb_source_lamp(m, order[k]);
+        char tag[2] = {lamp >= 0 ? (char)('1' + lamp) : '*', 0};
+        if (v->n_lamps > 1) {
+            text(x0 + 8, y, tag, DIM);
+            text_clip(x0 + 16, y, s->name, 10, s->acked ? DIM : TEXT);
+        } else {
+            text_clip(x0 + 8, y, s->name, 11, s->acked ? DIM : TEXT);
+        }
     }
     if (n > 4) {
         char more[24];

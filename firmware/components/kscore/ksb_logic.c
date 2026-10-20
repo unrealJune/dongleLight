@@ -22,9 +22,47 @@ static ksb_scene_t rgb_scene(uint8_t r, uint8_t g, uint8_t b, uint8_t bright)
 void ksb_init(ksb_model_t *m)
 {
     memset(m, 0, sizeof(*m));
-    m->base.kind = KSB_SCENE_OFF;
-    m->last_on = rgb_scene(255, 255, 255, 100);
+    for (int l = 0; l < KSB_MAX_LAMPS; l++) {
+        m->base[l].kind = KSB_SCENE_OFF;
+        m->last_on[l] = rgb_scene(255, 255, 255, 100);
+    }
+    m->n_lamps = 1;
     m->last_event_src = -1;
+}
+
+void ksb_set_lamp_count(ksb_model_t *m, uint8_t n)
+{
+    m->n_lamps = n > KSB_MAX_LAMPS ? KSB_MAX_LAMPS : n;
+}
+
+void ksb_clear_map(ksb_model_t *m)
+{
+    m->lamp_src_valid = 0;
+    m->map_dirty = true;
+}
+
+static int mapped_lamp(const ksb_model_t *m, uint8_t id)
+{
+    for (int l = 0; l < KSB_MAX_LAMPS; l++) {
+        if ((m->lamp_src_valid & (1u << l)) && m->lamp_src[l] == id) return l;
+    }
+    return -1;
+}
+
+static void map_source(ksb_model_t *m, uint8_t id, int lamp)
+{
+    int old = mapped_lamp(m, id);
+    if (old == lamp) return;
+    if (old >= 0) m->lamp_src_valid &= (uint8_t)~(1u << old);
+    m->lamp_src[lamp] = id;
+    m->lamp_src_valid |= (uint8_t)(1u << lamp);
+    m->map_dirty = true;
+}
+
+int ksb_source_lamp(const ksb_model_t *m, int i)
+{
+    if (i < 0 || i >= KSB_MAX_SOURCES || !m->src[i].used) return -1;
+    return mapped_lamp(m, m->src[i].id);
 }
 
 static void event(ksb_model_t *m, uint8_t kind, int src, uint32_t now)
@@ -34,10 +72,13 @@ static void event(ksb_model_t *m, uint8_t kind, int src, uint32_t now)
     m->last_event_ms = now;
 }
 
-static void set_base(ksb_model_t *m, ksb_scene_t s)
+static void set_base(ksb_model_t *m, uint8_t mask, ksb_scene_t s, bool restore_last)
 {
-    m->base = s;
-    if (s.kind != KSB_SCENE_OFF) m->last_on = s;
+    for (int l = 0; l < KSB_MAX_LAMPS; l++) {
+        if (!(mask & (1u << l))) continue;
+        m->base[l] = restore_last ? m->last_on[l] : s;
+        if (m->base[l].kind != KSB_SCENE_OFF) m->last_on[l] = m->base[l];
+    }
 }
 
 static int find_source(const ksb_model_t *m, uint8_t id)
@@ -68,7 +109,7 @@ static int alloc_source(ksb_model_t *m)
 
 static void apply_signal(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
 {
-    uint8_t id = c->args[0], state = c->args[1];
+    uint8_t id = c->args[0], state = c->args[1] & 0x0F, pref = c->args[1] >> 4;
     int i = find_source(m, id);
     if (state == KSA_SIG_IDLE) {
         if (i >= 0) m->src[i].used = false;
@@ -83,6 +124,18 @@ static void apply_signal(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
         m->src[i].state = 0xFF; // force "changed" below
     }
     ksb_source_t *s = &m->src[i];
+    // Lamp mapping: a pinned devbox takes its lamp; otherwise the first free
+    // claimed lamp; otherwise it stays unmapped and shows on every lamp.
+    if (pref && pref <= KSB_MAX_LAMPS) {
+        map_source(m, id, pref - 1);
+    } else if (mapped_lamp(m, id) < 0) {
+        for (int l = 0; l < m->n_lamps; l++) {
+            if (!(m->lamp_src_valid & (1u << l))) {
+                map_source(m, id, l);
+                break;
+            }
+        }
+    }
     size_t n = c->nargs - 2;
     if (n) {
         memcpy(s->name, c->args + 2, n);
@@ -106,28 +159,29 @@ static void apply_signal(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
 
 bool ksb_apply(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
 {
+    uint8_t mask = ksa_cmd_lamps(c);
     switch (c->op) {
     case KSA_OP_POWER:
-        set_base(m, c->args[0] ? m->last_on : (ksb_scene_t){.kind = KSB_SCENE_OFF});
+        set_base(m, mask, (ksb_scene_t){.kind = KSB_SCENE_OFF}, c->args[0] != 0);
         break;
     case KSA_OP_RGB:
-        set_base(m, rgb_scene(c->args[0], c->args[1], c->args[2], c->args[3] > 100 ? 100 : c->args[3]));
+        set_base(m, mask, rgb_scene(c->args[0], c->args[1], c->args[2], c->args[3] > 100 ? 100 : c->args[3]), false);
         break;
     case KSA_OP_EFFECT:
         if (c->args[0] < 0x82 || c->args[0] > 0x8A || c->args[1] > 100 || c->args[2] < 1 || c->args[2] > 100) {
             return false;
         }
-        set_base(m, (ksb_scene_t){.kind = KSB_SCENE_EFFECT, .effect = c->args[0], .speed = c->args[1],
-                                  .bright = c->args[2]});
+        set_base(m, mask, (ksb_scene_t){.kind = KSB_SCENE_EFFECT, .effect = c->args[0], .speed = c->args[1],
+                                        .bright = c->args[2]}, false);
         break;
     case KSA_OP_WHITE:
-        set_base(m, (ksb_scene_t){.kind = KSB_SCENE_WHITE, .white = c->args[0]});
+        set_base(m, mask, (ksb_scene_t){.kind = KSB_SCENE_WHITE, .white = c->args[0]}, false);
         break;
     case KSA_OP_SIGNAL:
         apply_signal(m, c, now);
         return true;
     case KSA_OP_ACK:
-        ksb_ack_all(m, now);
+        ksb_ack(m, mask, now);
         return true;
     default:
         return false;
@@ -136,11 +190,13 @@ bool ksb_apply(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
     return true;
 }
 
-void ksb_ack_all(ksb_model_t *m, uint32_t now)
+void ksb_ack(ksb_model_t *m, uint8_t mask, uint32_t now)
 {
     for (int i = 0; i < KSB_MAX_SOURCES; i++) {
         ksb_source_t *s = &m->src[i];
-        if (s->used && s->state >= KSA_SIG_DONE && !s->acked) {
+        int lamp = ksb_source_lamp(m, i);
+        bool shown_here = lamp < 0 || (mask & (1u << lamp)); // unmapped shows everywhere
+        if (s->used && shown_here && s->state >= KSA_SIG_DONE && !s->acked) {
             s->acked = true;
             s->since_ms = now;
         }
@@ -162,12 +218,16 @@ void ksb_tick(ksb_model_t *m, uint32_t now)
     }
 }
 
-int ksb_top_source(const ksb_model_t *m)
+int ksb_top_source_for(const ksb_model_t *m, int lamp)
 {
     int top = -1;
     for (int i = 0; i < KSB_MAX_SOURCES; i++) {
         const ksb_source_t *s = &m->src[i];
         if (!s->used || s->acked || s->state < KSA_SIG_DONE) continue;
+        if (lamp >= 0) {
+            int sl = ksb_source_lamp(m, i);
+            if (sl >= 0 && sl != lamp) continue;
+        }
         if (top < 0 || s->state > m->src[top].state ||
             (s->state == m->src[top].state && (int32_t)(s->since_ms - m->src[top].since_ms) > 0)) {
             top = i;
@@ -176,11 +236,12 @@ int ksb_top_source(const ksb_model_t *m)
     return top;
 }
 
-void ksb_desired(const ksb_model_t *m, ksb_scene_t *out)
+void ksb_desired(const ksb_model_t *m, int lamp, ksb_scene_t *out)
 {
-    int top = ksb_top_source(m);
+    if (lamp < 0 || lamp >= KSB_MAX_LAMPS) lamp = 0;
+    int top = ksb_top_source_for(m, lamp);
     if (top < 0) {
-        *out = m->base;
+        *out = m->base[lamp];
         return;
     }
     switch (m->src[top].state) {
