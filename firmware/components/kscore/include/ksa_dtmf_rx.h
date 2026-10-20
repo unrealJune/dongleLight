@@ -1,4 +1,7 @@
-// Streaming DTMF receiver + silence-delimited framer. Portable C, no ESP-IDF deps,
+// Streaming multi-tone receiver + silence-delimited framer. Each channel is a
+// DTMF-style 4x4 tone grid; channels interleave on one 85 Hz-spaced grid
+// (KSA_GRID_F0 + i*KSA_GRID_STEP, channel c owns i = c, c+4, ..., c+28), so
+// several devboxes can talk at once on one USB speaker. Portable C, no ESP-IDF deps,
 // so it is unit-tested on the host against codec-mangled audio (see test/).
 #pragma once
 #include <stddef.h>
@@ -14,13 +17,16 @@ extern "C" {
 #define KSA_FRAME_END_MS 150
 #define KSA_MAX_NIBBLES 32
 #define KSA_MAX_RATE 48000
+#define KSA_MAX_CHANNELS 4
+#define KSA_GRID_F0 600.0f
+#define KSA_GRID_STEP 85.0f
 
 // Called with raw frame bytes (CRC included) whenever a frame closes with an
 // even number of nibbles. Validation happens in ksa_frame_parse().
 typedef void (*ksa_frame_cb_t)(const uint8_t *bytes, size_t len, void *ctx);
 
 typedef struct {
-    int rate, win, hop;
+    int rate, win, hop, channel;
     float coef[8];
     float buf[KSA_MAX_RATE * KSA_WIN_MS / 1000];
     int fill;           // samples in buf
@@ -34,9 +40,13 @@ typedef struct {
     void *ctx;
     // stats for debugging
     uint32_t symbols_seen, frames_emitted;
+    uint32_t hops, last_accept_hop;
 } ksa_rx_t;
 
-void ksa_rx_init(ksa_rx_t *rx, int sample_rate, ksa_frame_cb_t cb, void *ctx);
+void ksa_rx_init(ksa_rx_t *rx, int sample_rate, int channel, ksa_frame_cb_t cb, void *ctx);
+
+// Tone i (0..7: rows then cols) of a channel, in Hz.
+float ksa_tone_hz(int channel, int i);
 
 // Feed mono float samples in [-1, 1].
 void ksa_rx_feed(ksa_rx_t *rx, const float *x, size_t n);

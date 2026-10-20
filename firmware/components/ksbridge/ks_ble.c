@@ -13,7 +13,6 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "sdkconfig.h"
-#include "status_led.h"
 
 static const char *TAG = "ks_ble";
 
@@ -30,6 +29,7 @@ static ble_uuid16_t s_svc_uuid, s_chr_uuid;
 static uint8_t s_target_addr[6];
 static bool s_have_target_addr;
 static volatile uint32_t s_link_gen;
+static char s_pending_name[32], s_lamp_name[32];
 
 static int gap_event(struct ble_gap_event *event, void *arg);
 static void start_scan(void);
@@ -58,7 +58,7 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *err, const struct 
         }
         ESP_LOGI(TAG, "ready: %s char %04X handle %u props 0x%02x", s_profile->prefix,
                  s_profile->write_chr, s_val_handle, s_chr_props);
-        status_led_set(LED_CONNECTED);
+        strlcpy(s_lamp_name, s_pending_name, sizeof s_lamp_name);
         s_link_gen++;
         xEventGroupSetBits(s_events, READY_BIT);
         return 0;
@@ -108,6 +108,7 @@ static void handle_adv(const struct ble_gap_disc_desc *d)
     }
     ESP_LOGI(TAG, "found '%s' rssi %d -> profile %s", name, d->rssi, p->prefix);
     s_profile = p;
+    strlcpy(s_pending_name, name, sizeof s_pending_name);
     s_connecting = true;
     ble_gap_disc_cancel();
     int rc = ble_gap_connect(s_own_addr_type, &d->addr, 10000, NULL, gap_event, NULL);
@@ -163,7 +164,6 @@ static void start_scan(void)
         ESP_LOGE(TAG, "scan start failed: %d", rc);
         return;
     }
-    status_led_set(LED_SCANNING);
     ESP_LOGI(TAG, "scanning for '%s*'", CONFIG_KSA_NAME_PREFIX);
 }
 
@@ -217,4 +217,14 @@ void ks_ble_drop(void)
 {
     uint16_t conn = s_conn;
     if (conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
+}
+
+bool ks_ble_ready(void)
+{
+    return (xEventGroupGetBits(s_events) & READY_BIT) != 0;
+}
+
+void ks_ble_lamp_name(char *out, size_t cap)
+{
+    strlcpy(out, s_lamp_name, cap); // last connected lamp; kept while reconnecting
 }

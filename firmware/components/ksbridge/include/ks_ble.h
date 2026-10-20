@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "ksa_protocol.h"
@@ -16,3 +17,9 @@ int ks_ble_write(const uint8_t *data, size_t len);
 
 // Drop the current link (e.g. after a failed write); scanning resumes.
 void ks_ble_drop(void);
+
+// True while connected with the write characteristic found.
+bool ks_ble_ready(void);
+
+// Advertised name of the current/last lamp ("" before the first connection).
+void ks_ble_lamp_name(char *out, size_t cap);

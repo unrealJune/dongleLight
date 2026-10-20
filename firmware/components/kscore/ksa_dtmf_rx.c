@@ -1,12 +1,15 @@
 #include "ksa_dtmf_rx.h"
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
+#ifdef KSA_DEBUG_SYMBOLS
+#include <stdio.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-static const float FREQS[8] = {697, 770, 852, 941, 1209, 1336, 1477, 1633};
 
 // Keypad position -> nibble. '*' = 0xE, '#' = 0xF.
 static const uint8_t KEYMAP[4][4] = {
@@ -20,19 +23,29 @@ static const uint8_t KEYMAP[4][4] = {
 // Only a CPU shortcut: silence and non-DTMF sound both count as "gap" for framing,
 // so this can sit near the 16-bit floor. Tones are ~-10 dBFS RMS at full volume.
 #define SILENCE_MEAN_POWER 1e-7f // -70 dBFS RMS
-#define MIN_TONE_FRACTION 0.55f  // share of window energy in the two DTMF tones
+// Share of window energy in this channel's two tones. Low enough that four
+// channels talking at once still pass; the peak-ratio tests and CRC do the rest.
+#define MIN_TONE_FRACTION 0.2f
 #define MIN_PEAK_RATIO 6.0f      // winner vs runner-up within row/col group (~7.8 dB)
 #define MAX_TWIST 6.3f           // |row - col| power ratio (~8 dB)
+#define KSA_MIN_REPEAT_HOPS 6    // 60 ms; symbols repeat every 80 ms
 
-void ksa_rx_init(ksa_rx_t *rx, int sample_rate, ksa_frame_cb_t cb, void *ctx)
+float ksa_tone_hz(int channel, int i)
+{
+    return KSA_GRID_F0 + KSA_GRID_STEP * (float)(channel + KSA_MAX_CHANNELS * i);
+}
+
+void ksa_rx_init(ksa_rx_t *rx, int sample_rate, int channel, ksa_frame_cb_t cb, void *ctx)
 {
     memset(rx, 0, sizeof(*rx));
     if (sample_rate > KSA_MAX_RATE) sample_rate = KSA_MAX_RATE;
+    if (channel < 0 || channel >= KSA_MAX_CHANNELS) channel = 0;
     rx->rate = sample_rate;
+    rx->channel = channel;
     rx->win = sample_rate * KSA_WIN_MS / 1000;
     rx->hop = sample_rate * KSA_HOP_MS / 1000;
     for (int i = 0; i < 8; i++) {
-        rx->coef[i] = 2.0f * cosf(2.0f * (float)M_PI * FREQS[i] / (float)sample_rate);
+        rx->coef[i] = 2.0f * cosf(2.0f * (float)M_PI * ksa_tone_hz(channel, i) / (float)sample_rate);
     }
     rx->run_sym = -1;
     rx->armed = 1;
@@ -77,7 +90,7 @@ int ksa_classify(const ksa_rx_t *rx, const float *x, int n)
 
 static void close_frame(ksa_rx_t *rx)
 {
-    if (!rx->overflow && rx->nnib >= 6 && (rx->nnib % 2) == 0 && rx->cb) {
+    if (!rx->overflow && rx->nnib >= 4 && (rx->nnib % 2) == 0 && rx->cb) {
         uint8_t bytes[KSA_MAX_NIBBLES / 2];
         int n = rx->nnib / 2;
         for (int i = 0; i < n; i++) {
@@ -92,6 +105,7 @@ static void close_frame(ksa_rx_t *rx)
 
 static void on_window(ksa_rx_t *rx, int c)
 {
+    rx->hops++;
     static const int end_hops = KSA_FRAME_END_MS / KSA_HOP_MS;
     if (c >= 0) {
         int last_accepted = rx->nnib ? rx->nib[rx->nnib - 1] : -1;
@@ -102,9 +116,16 @@ static void on_window(ksa_rx_t *rx, int c)
             rx->run_len = 1;
         }
         // Accept after a gap, or on a direct change of symbol (codec smear can eat
-        // short gaps). A repeated nibble therefore always needs a real gap.
-        if (rx->run_len == KSA_MIN_RUN && (rx->armed || c != last_accepted)) {
+        // short gaps). A repeated nibble needs a real gap AND a full symbol period
+        // since the last one: a one-window codec dropout mid-tone otherwise looks
+        // like a gap and doubles the symbol.
+        bool repeat_ok = rx->armed && (uint32_t)(rx->hops - rx->last_accept_hop) >= KSA_MIN_REPEAT_HOPS;
+        if (rx->run_len == KSA_MIN_RUN && (c != last_accepted || repeat_ok)) {
+            rx->last_accept_hop = rx->hops;
             rx->symbols_seen++;
+#ifdef KSA_DEBUG_SYMBOLS
+            printf("sym %X at %.3fs%s\n", c, rx->hops * 0.01, rx->armed ? "" : " (change)");
+#endif
             if (rx->nnib < KSA_MAX_NIBBLES) {
                 rx->nib[rx->nnib++] = (uint8_t)c;
             } else {

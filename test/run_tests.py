@@ -14,23 +14,78 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CORE = os.path.join(ROOT, "firmware", "components", "ksaudio")
+CORE = os.path.join(ROOT, "firmware", "components", "kscore")
 sys.path.insert(0, os.path.join(ROOT, "host"))
-import ks_tx  # noqa: E402
+import ks as ks_tx  # noqa: E402
 
 BUILD = tempfile.mkdtemp(prefix="ksa_build_")
 RATE = 48000
 
 
 def build():
-    srcs = [os.path.join(CORE, f) for f in ("ksa_dtmf_rx.c", "ksa_frame.c", "ksa_protocol.c")]
+    srcs = [os.path.join(CORE, f) for f in ("ksa_dtmf_rx.c", "ksa_frame.c", "ksa_protocol.c", "ksb_logic.c", "ksc_card.c")]
     inc = ["-I", os.path.join(CORE, "include")]
     flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-std=c11"]
     dec = os.path.join(BUILD, "host_decode")
     proto = os.path.join(BUILD, "test_protocol")
     subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, "host_decode.c"), *srcs, "-lm", "-o", dec], check=True)
     subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, "test_protocol.c"), *srcs, "-lm", "-o", proto], check=True)
+    for name in ("test_logic", "card_harness"):
+        subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, name + ".c"), *srcs, "-lm",
+                        "-o", os.path.join(BUILD, name)], check=True)
     return dec, proto
+
+
+def card_tests():
+    """Drive the virtual bridge with APDUs built by ks.py; parse with ks.py."""
+    K = ks_tx
+    sel_piv = bytes.fromhex("00A4040009A00000030800001000")
+    script = [
+        ("status before SELECT", K.apdu_status(), "6985"),
+        ("SELECT bridge", K.apdu_select(), "019000"),
+        ("signal needs-you", K.apdu_submit(K.build_body(K.OP_SIGNAL, K.signal_args("needs-you", "devbox-1"))), "00019000"),
+        ("rgb", K.apdu_submit(K.build_body(K.OP_RGB, [255, 136, 0, 80])), "00029000"),
+        ("signal working", K.apdu_submit(K.build_body(K.OP_SIGNAL, K.signal_args("working", "train"))), "00039000"),
+        ("bad op", K.apdu_submit(bytes([0x59, 1])), "6a80"),
+        ("Windows probes PIV", sel_piv, "6a82"),
+        ("submit after foreign SELECT", K.apdu_submit(K.build_body(K.OP_ACK, [])), "6985"),
+        ("reSELECT", K.apdu_select(), "019000"),
+        ("status", K.apdu_status(), None),
+    ]
+    raw = [
+        ("power on returns ATR", "62000000000000000000"),
+        ("bad slot fails", "65000000000100000000"),
+        ("get parameters (T=1)", "6c000000000000000000"),
+        ("escape unsupported", "6b000000000000000000"),
+    ]
+    inp = "".join(a.hex() + "\n" for _, a, _ in script) + "".join("!" + m + "\n" for _, m in raw)
+    exe = os.path.join(BUILD, "card_harness")
+    out = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split()
+    fails = 0
+    for (name, _, want), got in zip(script, out):
+        if want is not None and got != want:
+            print("  FAIL card %-28s got %s want %s" % (name, got, want))
+            fails += 1
+    st = K.parse_status(bytes.fromhex(out[len(script) - 1])[:-2])
+    names = {s["name"]: s["state"] for s in st["sources"]}
+    if names != {"devbox-1": "needs-you", "train": "working"} or st["lamp"] != "KS03~1A2B" or st["link"] != "connected":
+        print("  FAIL card status parse:", st)
+        fails += 1
+    r = [bytes.fromhex(x) for x in out[len(script):]]
+    atr = r[0][10:]
+    tck = 0
+    for b in atr[1:-1]:
+        tck ^= b
+    checks = [r[0][0] == 0x80 and atr[:4] == bytes.fromhex("3b878101") and atr[-1] == tck and b"KSLIGHT" in atr,
+              r[1][0] == 0x81 and r[1][7] & 0x40 and r[1][8] == 5,
+              r[2][0] == 0x82 and r[2][9] == 1 and len(r[2]) == 17,
+              r[3][0] == 0x83 and r[3][7] & 0x40]
+    for (name, _), ok in zip(raw, checks):
+        if not ok:
+            print("  FAIL ccid", name, r)
+            fails += 1
+    print("%-30s: %s" % ("card applet + CCID", "PASS" if not fails else "FAIL"))
+    return fails
 
 
 def stereo_s16(mono):
@@ -58,7 +113,7 @@ def decode(dec, pcm):
     lines = p.stdout.decode().split()
     ok = [l for l in p.stdout.decode().splitlines() if l.startswith("OK ")]
     bad = [l for l in p.stdout.decode().splitlines() if l.startswith("BAD ")]
-    return [l.split()[1] for l in ok], bad, p.stderr.decode().strip(), lines
+    return [l.split()[2] for l in ok], bad, p.stderr.decode().strip(), lines
 
 
 def chime(n_total, start, rng):
@@ -102,6 +157,11 @@ def main():
     if r.returncode:
         print(r.stdout)
 
+    r = subprocess.run([os.path.join(BUILD, "test_logic")], capture_output=True, text=True)
+    print(r.stdout.strip().splitlines()[-1])
+    failures += r.returncode != 0
+    failures += card_tests()
+
     rng = np.random.default_rng(1)
     for sname, sc in SCENARIOS:
         for gain_db in (0, -20, -45):
@@ -138,21 +198,23 @@ def main():
         junk += chime(n, s, rng) * rng.uniform(0, 1)
     t = np.arange(n) / RATE
     junk += 0.2 * np.sin(2 * np.pi * rng.uniform(300, 2000) * t)
-    # random DTMF bursts with random timing: valid symbols, garbage frames
+    # random tone-pair bursts on random channels: valid symbols, garbage frames
     for _ in range(300):
         start = rng.integers(0, n - RATE)
         nib = rng.integers(0, 16)
         rr, cc = ks_tx.KEYPOS[int(nib)]
+        ch = int(rng.integers(0, ks_tx.MAX_CHANNELS))
         ln = int(rng.integers(30, 120) * RATE / 1000)
         tt = np.arange(ln) / RATE
-        junk[start:start + ln] += 0.3 * (np.sin(2 * np.pi * ks_tx.ROWS[rr] * tt) + np.sin(2 * np.pi * ks_tx.COLS[cc] * tt))
+        junk[start:start + ln] += 0.3 * (np.sin(2 * np.pi * ks_tx.tone_hz(ch, rr) * tt) +
+                                         np.sin(2 * np.pi * ks_tx.tone_hz(ch, 4 + cc) * tt))
     ok, bad, stats, _ = decode(dec, stereo_s16(junk * 0.5))
     failures += len(ok) > 0
     print("%-30s: %s (false OK=%d, rejected=%d) %s" % ("60 s junk", "PASS" if not ok else "FAIL", len(ok), len(bad), stats))
 
     # Python CLI smoke test
     wav = os.path.join(BUILD, "cli.wav")
-    subprocess.run([sys.executable, os.path.join(ROOT, "host", "ks_tx.py"), "--wav", wav, "rgb", "ff8800"],
+    subprocess.run([sys.executable, os.path.join(ROOT, "host", "ks.py"), "--wav", wav, "--channel", "0", "rgb", "ff8800"],
                    check=True, capture_output=True)
     with open(wav, "rb") as f:
         data = f.read()[44:]
@@ -160,7 +222,21 @@ def main():
     want = ks_tx.build_frame(ks_tx.OP_RGB, [0xFF, 0x88, 0, 100]).hex()
     cli_ok = ok == [want, want]
     failures += not cli_ok
-    print("%-30s: %s" % ("ks_tx.py --wav (repeat 2)", "PASS" if cli_ok else "FAIL %s" % ok))
+    print("%-30s: %s" % ("ks.py --wav (repeat 2)", "PASS" if cli_ok else "FAIL %s" % ok))
+
+    # Agent signal via the CLI on every channel
+    sig_ok = True
+    for ch in range(ks_tx.MAX_CHANNELS):
+        wav = os.path.join(BUILD, "sig%d.wav" % ch)
+        env = dict(os.environ, KS_SOURCE="box-%d" % ch)
+        subprocess.run([sys.executable, os.path.join(ROOT, "host", "ks.py"), "--wav", wav, "--channel", str(ch),
+                        "signal", "needs-you"], check=True, capture_output=True, env=env)
+        with open(wav, "rb") as f:
+            out = subprocess.run([dec], input=f.read()[44:], capture_output=True).stdout.decode()
+        want = ks_tx.build_frame(ks_tx.OP_SIGNAL, ks_tx.signal_args("needs-you", "box-%d" % ch)).hex()
+        sig_ok &= ("OK %d %s" % (ch, want)) in out
+    failures += not sig_ok
+    print("%-30s: %s" % ("ks.py signal, channels 0-3", "PASS" if sig_ok else "FAIL"))
 
     print("\n%s" % ("ALL PASSED" if not failures else "%d FAILURE(S)" % failures))
     return 1 if failures else 0

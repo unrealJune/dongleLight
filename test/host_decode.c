@@ -1,37 +1,38 @@
-// Host harness: read 48 kHz s16le stereo PCM on stdin, print decoded frames.
-//   OK <hex> op=<n>     valid frame
-//   BAD <hex> err=<n>   frame-shaped but rejected (CRC/version/args)
+// Host harness: read 48 kHz s16le stereo PCM on stdin, decode every channel,
+// print frames:  OK <ch> <hex> op=<n>   |   BAD <ch> <hex> err=<n>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include "ksa_dtmf_rx.h"
 #include "ksa_frame.h"
 
 static void on_frame(const uint8_t *b, size_t n, void *ctx)
 {
-    (void)ctx;
+    int ch = (int)(intptr_t)ctx;
     ksa_cmd_t cmd;
     int err = ksa_frame_parse(b, n, &cmd);
-    printf(err ? "BAD " : "OK ");
+    printf(err ? "BAD %d " : "OK %d ", ch);
     for (size_t i = 0; i < n; i++) printf("%02x", b[i]);
     if (err) printf(" err=%d\n", err);
     else printf(" op=%d\n", cmd.op);
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
-    int rate = argc > 1 ? atoi(argv[1]) : 48000;
-    static ksa_rx_t rx;
-    ksa_rx_init(&rx, rate, on_frame, NULL);
+    static ksa_rx_t rx[KSA_MAX_CHANNELS];
+    for (int c = 0; c < KSA_MAX_CHANNELS; c++) ksa_rx_init(&rx[c], 48000, c, on_frame, (void *)(intptr_t)c);
     short in[2 * 480];
     float mono[480];
     size_t got;
     while ((got = fread(in, sizeof(short) * 2, 480, stdin)) > 0) {
         for (size_t i = 0; i < got; i++) mono[i] = (in[2 * i] + in[2 * i + 1]) / 65536.0f;
-        ksa_rx_feed(&rx, mono, got);
+        for (int c = 0; c < KSA_MAX_CHANNELS; c++) ksa_rx_feed(&rx[c], mono, got);
     }
-    // flush trailing silence so a frame at EOF still closes
     float z[480] = {0};
-    for (int i = 0; i < 40; i++) ksa_rx_feed(&rx, z, 480);
-    fprintf(stderr, "symbols=%u frames=%u\n", rx.symbols_seen, rx.frames_emitted);
+    for (int i = 0; i < 40; i++)
+        for (int c = 0; c < KSA_MAX_CHANNELS; c++) ksa_rx_feed(&rx[c], z, 480);
+    unsigned sym = 0, fr = 0;
+    for (int c = 0; c < KSA_MAX_CHANNELS; c++) { sym += rx[c].symbols_seen; fr += rx[c].frames_emitted; }
+    fprintf(stderr, "symbols=%u frames=%u\n", sym, fr);
     return 0;
 }
