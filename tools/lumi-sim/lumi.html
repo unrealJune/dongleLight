@@ -145,6 +145,21 @@ button.chip.primary:hover { background: #ffc23a; }
 .hint kbd { font-family: var(--mono); font-size: 12px; background: #232634; border: 1px solid #33374a; border-radius: 4px; padding: 0 4px; color: var(--ink); }
 footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 14px; }
 footer code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+/* ---------- life size ---------- */
+.lifebar { width: min(100%, 560px); display: flex; flex-wrap: wrap; gap: 8px; }
+.life { width: min(100%, 560px); background: var(--desk-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; display: grid; gap: 14px; }
+.life h3 { font-family: var(--display); font-weight: 700; font-size: 17px; margin: 0; }
+.life-real { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.glass { background: #07080c; padding: 3px; border-radius: 2px; box-shadow: 0 0 0 1px #3c3f50; line-height: 0; }
+canvas#real { display: block; }
+.ruler { font-family: var(--mono); font-size: 11px; color: var(--muted); display: grid; gap: 4px; }
+.ruler i { display: block; height: 6px; border: 1px solid var(--muted); border-top: 0; }
+.cal { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; overflow-x: auto; }
+.card-outline { border: 2px dashed var(--amber); border-radius: 3mm; display: grid; place-items: center;
+  color: var(--muted); font-family: var(--mono); font-size: 12px; text-align: center; padding: 8px; }
+.cal input[type=range] { width: 100%; accent-color: var(--amber); }
+.cal .meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .tape { transition: none; } }
 </style>
 
@@ -179,6 +194,27 @@ footer code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
       </div>
 
       <div class="caption quiet" id="caption" aria-live="polite">Both strips are claimed and orange. Try a devbox's “needs you”.</div>
+
+      <div class="lifebar">
+        <button class="chip" id="lifeToggle" aria-expanded="false" aria-controls="life">Show life size</button>
+      </div>
+
+      <div class="life" id="life" hidden>
+        <h3>Actual size: 0.96″ panel, 21.8 × 10.9 mm</h3>
+        <div class="life-real">
+          <div class="glass"><canvas id="real" aria-label="Lumi's screen at real size"></canvas></div>
+          <div class="ruler" id="ruler"><i id="cm"></i>1 cm</div>
+        </div>
+        <p class="hint" id="lifeHint">Calibrate once below, then look from where you'd sit with the dongle plugged into your laptop.</p>
+        <div class="cal">
+          <div class="card-outline" id="cardOutline">hold a credit card here<br>85.60 × 53.98 mm</div>
+          <label class="hint" for="ppm">Drag until the dashed outline matches a real card held flat against the screen.</label>
+          <input type="range" id="ppm" min="2" max="9" step="0.01" value="3.78">
+          <div class="meta"><span id="ppmText"></span><button class="chip" id="ppmReset">Reset to 96 dpi guess</button></div>
+        </div>
+      </div>
+
+
     </section>
 
     <section class="panel" aria-label="Controls">
@@ -373,6 +409,35 @@ footer code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
       storyTimers.push(setTimeout(stopStory, 40000));
     });
 
+    // ---- life size: the panel's active area is 0.96" diagonal at 2:1
+    const PANEL_W_MM = 0.96 * 25.4 * 2 / Math.sqrt(5), PANEL_H_MM = PANEL_W_MM / 2; // 21.81 x 10.90
+    const CARD_W_MM = 85.60, CARD_H_MM = 53.98;                                    // ISO/IEC 7810 ID-1
+    const real = $("real"), rctx = real.getContext("2d");
+    let ppm = 96 / 25.4, lifeOn = false;
+    try { const s = parseFloat(localStorage.getItem("lumi.ppm")); if (s > 1 && s < 20) ppm = s; } catch (e) {}
+    function layoutLife() {
+      const dpr = window.devicePixelRatio || 1, w = PANEL_W_MM * ppm, h = PANEL_H_MM * ppm;
+      real.style.width = w + "px"; real.style.height = h + "px";
+      real.width = Math.max(1, Math.round(w * dpr)); real.height = Math.max(1, Math.round(h * dpr));
+      $("cm").style.width = (10 * ppm) + "px";
+      const co = $("cardOutline");
+      co.style.width = (CARD_W_MM * ppm) + "px"; co.style.height = (CARD_H_MM * ppm) + "px";
+      $("ppm").value = ppm.toFixed(2);
+      $("ppmText").textContent = ppm.toFixed(2) + " px/mm · " + Math.round(ppm * 25.4 * dpr) + " device dpi · panel " +
+        (160 / (PANEL_W_MM * ppm * dpr)).toFixed(1) + " Lumi px per screen px";
+    }
+    function setPpm(v) { ppm = v; try { localStorage.setItem("lumi.ppm", String(v)); } catch (e) {} layoutLife(); }
+    $("ppm").addEventListener("input", e => setPpm(parseFloat(e.target.value)));
+    $("ppmReset").addEventListener("click", () => setPpm(96 / 25.4));
+    $("lifeToggle").addEventListener("click", () => {
+      lifeOn = !lifeOn; $("life").hidden = !lifeOn;
+      $("lifeToggle").textContent = lifeOn ? "Hide life size" : "Show life size";
+      $("lifeToggle").setAttribute("aria-expanded", String(lifeOn));
+      if (lifeOn) layoutLife();
+    });
+    window.addEventListener("resize", () => lifeOn && layoutLife());
+    layoutLife();
+
     // ---- render loop
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
     function frame() {
@@ -390,6 +455,13 @@ footer code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
         d[j] = ((v >> 11) & 31) * 255 / 31; d[j + 1] = ((v >> 5) & 63) * 255 / 63; d[j + 2] = (v & 31) * 255 / 31; d[j + 3] = 255;
       }
       ctx.putImageData(img, 0, 0);
+      if (lifeOn) {
+        // Real pixels are smaller than most monitors' pixels: let the browser
+        // average them, which is roughly what your eye does with the real panel.
+        rctx.imageSmoothingEnabled = real.width < 160;
+        rctx.imageSmoothingQuality = "high";
+        rctx.drawImage(canvas, 0, 0, real.width, real.height);
+      }
       for (let l = 0; l < 4; l++) {
         const c = x.sim_lamp_color(l) >>> 0, tape = $("tape" + l);
         const off = !!(c & (1 << 25)), fx = !!(c & (1 << 24));
