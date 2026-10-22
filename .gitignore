@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 # outputs
 *.wav
+
+# local Python env
+.venv/
