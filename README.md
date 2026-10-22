@@ -1,15 +1,21 @@
-# KS light bridge
+# dongleLight
 
 A physical "a Claude needs you" light that crosses the machine boundary.
 Claude Code sessions on locked-down cloud devboxes signal through RDP to a
-USB dongle on your laptop, which drives a KS Bluetooth LED strip and a little
+USB dongle on your laptop, which drives Bluetooth LED strips and a little
 screen creature named Lumi.
 
 ```
 devbox(es)                  RDP                    your laptop                 Bluetooth
-Claude Code hook ─► ks.py ─► smart card redirect ─► ESP32-S3 dongle (T-Dongle) ─► KS strip
+Claude Code hook ─► ks.py ─► smart card redirect ─► ESP32-S3 dongle (T-Dongle) ─► LED strip(s)
                           └► or audio redirect  ─►   screen + LED + button
 ```
+
+**Supported strips:** Triones / HappyLighting controllers (names starting
+`Triones`, `LEDBLE`, `LEDBlue`, `QHM`, `BRGlight`, `Dream`), the same family
+`trionesControl` drives, and KS / KeepSmile lamps (`KS03~` etc.). The family is
+picked per lamp from its advertised name. (The `ks` names in the code are
+historical: the project started on KS lamps.)
 
 ![Lumi](docs/lumi.gif)
 
@@ -39,6 +45,8 @@ before plugging it into a managed machine.
 | Simultaneous channels (`test/multichannel.py`) | 1–2 at once: 100% through Opus ≥16k and AAC. 4 at once: 98–100% at Opus ≥24k, 71% at 16k. Opus 12k "voip" mode can't handle overlap. 0 false frames in 2000 decodes. |
 | Signal/ack/expiry logic, lamp mapping | **Host-tested** (`test/test_logic.c`): auto-assign, pinning, overflow, per-lamp acks and colors |
 | Card applet + CCID messages | **Host-tested** with the exact APDUs `ks.py` sends, incl. a Windows-style PIV probe |
+| Triones packets | Byte-identical to the real `trionesControl` over 202 commands (`test/xcheck_trionescontrol.py`); effect codes and speed encoding from flux_led / Home Assistant led-ble |
+| Triones characteristic | Discovered per lamp: first writable of `FFD5`, `FFD9`, `FFE9`, `FFE5` (led-ble's order; batches differ) |
 | KS packets | Match upstream `golden_packets.json` |
 | Screen | Rendered on the host from the same C (`test/ui_preview.py` → `docs/`) |
 | Both firmwares | **Build clean** on ESP-IDF v5.4.2 (zero warnings in our code). **Not yet run on hardware.** |
@@ -51,8 +59,8 @@ before plugging it into a managed machine.
 **0. Host tests** (Linux/WSL with gcc, ffmpeg, numpy, Pillow):
 `python3 test/run_tests.py` → `ALL PASSED`.
 
-**1. Bluetooth + screen alone.** Close the KS app on your phone (the strip takes
-one connection). Flash the audio firmware in debug mode:
+**1. Bluetooth + screen alone.** Close the HappyLighting (or KS) app on your
+phone: each strip accepts one connection. Flash the audio firmware in debug mode:
 
 ```
 cd firmware/audio
@@ -147,6 +155,19 @@ errors or garbled input, gets a heart when you ack, sleeps (`z`) when the lamp
 is off, and looks around while searching. The antenna is blue while searching,
 green when linked, and amber or red for alerts. The right side lists the agents,
 most urgent first.
+
+## Triones notes
+
+- Brightness: Triones has no brightness byte, so the RGB is scaled instead.
+  Built-in effects always run at full brightness.
+- Effects map onto Triones built-in modes: `*-breathing` → that color's
+  "gradual change" (`0x26`–`0x2C`), and `seven-color-fade`/`rgb-fade` → `0x25`.
+  Speed 0–100 maps to delay 31–1, where lower delay is faster.
+- `white` is drawn as warm RGB, because RGB-only strips have no white channel and
+  the Triones white command would just turn them off.
+- The needs-you pulse uses yellow gradual change (`BB 29 0A 44`).
+- `Dream…` controllers use a different effect set (per led-ble). They get color
+  and power only, and effects fall back to a static color.
 
 ## Wire formats
 

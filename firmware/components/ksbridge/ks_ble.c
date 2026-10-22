@@ -30,11 +30,11 @@ typedef struct {
     char name[24];
     const ks_profile_t *profile;
     uint16_t conn;
-    uint16_t svc_start, svc_end, val;
+    uint16_t val;
     uint8_t props;
+    int rank;            // index of the chosen candidate in profile->write_chr
     bool ready;
     uint32_t gen;
-    ble_uuid16_t svc_uuid, chr_uuid;
 } lamp_t;
 
 typedef struct { // persisted per lamp
@@ -114,45 +114,42 @@ static void load_lamps(void)
 }
 
 // ---------------------------------------------------------------- GATT discovery
+// One pass over every characteristic; keep the writable one that ranks highest
+// in the profile's candidate list (Triones batches differ: FFD5/FFD9/FFE9/FFE5).
+
+static int candidate_rank(const ks_profile_t *p, const ble_uuid_t *u)
+{
+    if (u->type != BLE_UUID_TYPE_16) return -1;
+    uint16_t v = BLE_UUID16(u)->value;
+    for (int k = 0; k < KS_MAX_WRITE_CHRS && p->write_chr[k]; k++)
+        if (p->write_chr[k] == v) return k;
+    return -1;
+}
 
 static int on_chr(uint16_t conn, const struct ble_gatt_error *err, const struct ble_gatt_chr *chr, void *arg)
 {
     int i = (int)(intptr_t)arg;
     lamp_t *l = &s_lamp[i];
     if (err->status == 0 && chr) {
-        l->val = chr->val_handle;
-        l->props = chr->properties;
+        int rank = candidate_rank(l->profile, &chr->uuid.u);
+        bool writable = chr->properties & (BLE_GATT_CHR_PROP_WRITE | BLE_GATT_CHR_PROP_WRITE_NO_RSP);
+        if (rank >= 0 && writable && rank < l->rank) {
+            l->rank = rank;
+            l->val = chr->val_handle;
+            l->props = chr->properties;
+        }
         return 0;
     }
-    if (err->status == BLE_HS_EDONE && l->val &&
-        (l->props & (BLE_GATT_CHR_PROP_WRITE | BLE_GATT_CHR_PROP_WRITE_NO_RSP))) {
+    if (err->status == BLE_HS_EDONE && l->val) {
         portENTER_CRITICAL(&s_mux);
         l->ready = true;
         l->gen++;
         portEXIT_CRITICAL(&s_mux);
-        ESP_LOGI(TAG, "lamp %d ready: %s", i + 1, l->name);
+        ESP_LOGI(TAG, "lamp %d ready: %s (%s, write %04X)", i + 1, l->name, l->profile->family,
+                 l->profile->write_chr[l->rank]);
         return 0;
     }
-    ESP_LOGE(TAG, "lamp %d: write characteristic %04X missing (status %d)", i + 1, l->profile->write_chr, err->status);
-    ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
-    return 0;
-}
-
-static int on_svc(uint16_t conn, const struct ble_gatt_error *err, const struct ble_gatt_svc *svc, void *arg)
-{
-    int i = (int)(intptr_t)arg;
-    lamp_t *l = &s_lamp[i];
-    if (err->status == 0 && svc) {
-        l->svc_start = svc->start_handle;
-        l->svc_end = svc->end_handle;
-        return 0;
-    }
-    if (err->status == BLE_HS_EDONE && l->svc_end) {
-        l->chr_uuid = (ble_uuid16_t)BLE_UUID16_INIT(l->profile->write_chr);
-        ble_gattc_disc_chrs_by_uuid(conn, l->svc_start, l->svc_end, &l->chr_uuid.u, on_chr, arg);
-        return 0;
-    }
-    ESP_LOGE(TAG, "lamp %d: service %04X missing (status %d)", i + 1, l->profile->service, err->status);
+    ESP_LOGE(TAG, "lamp %d: no writable %s characteristic (status %d)", i + 1, l->profile->family, err->status);
     ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
     return 0;
 }
@@ -259,9 +256,9 @@ static int lamp_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         l->conn = event->connect.conn_handle;
-        l->svc_start = l->svc_end = l->val = 0;
-        l->svc_uuid = (ble_uuid16_t)BLE_UUID16_INIT(l->profile->service);
-        ble_gattc_disc_svc_by_uuid(l->conn, &l->svc_uuid.u, on_svc, arg);
+        l->val = 0;
+        l->rank = KS_MAX_WRITE_CHRS;
+        ble_gattc_disc_all_chrs(l->conn, 1, 0xFFFF, on_chr, arg);
         start_scan(); // other claimed lamps may still be missing
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:

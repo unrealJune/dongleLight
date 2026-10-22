@@ -300,10 +300,10 @@ void ksb_scene_rgb(const ksb_scene_t *s, uint8_t *r, uint8_t *g, uint8_t *b)
 int ksb_packets(const ks_profile_t *p, const ksb_scene_t *s, uint8_t pkt[2][KS_MAX_PACKET], size_t len[2])
 {
     if (s->kind == KSB_SCENE_OFF) {
-        len[0] = ks_pkt_power(false, pkt[0]);
+        len[0] = ks_pkt_power(p, false, pkt[0]);
         return 1;
     }
-    len[0] = ks_pkt_power(true, pkt[0]);
+    len[0] = ks_pkt_power(p, true, pkt[0]);
     switch (s->kind) {
     case KSB_SCENE_RGB:
         len[1] = ks_pkt_rgb(p, s->r, s->g, s->b, s->bright, pkt[1]);
