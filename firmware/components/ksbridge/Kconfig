@@ -25,6 +25,25 @@ menu "KS light bridge"
         config KSA_LCD_ENABLE
             bool "Drive the 0.96\" ST7735 screen"
             default y
+
+        choice KSA_LCD_ORIENTATION
+            prompt "Screen orientation"
+            depends on KSA_LCD_ENABLE
+            default KSA_LCD_PORTRAIT
+            config KSA_LCD_PORTRAIT
+                bool "Portrait 80x160 (dongle standing, plug away from you)"
+            config KSA_LCD_LANDSCAPE
+                bool "Landscape 160x80"
+        endchoice
+
+        config KSA_LCD_FLIP
+            bool "Rotate the screen 180 degrees (if Lumi is upside down)"
+            depends on KSA_LCD_ENABLE
+            default n
+            help
+                Portrait should put the top of the screen at the USB plug. Which
+                way that is depends on how the panel is mounted, so if Lumi comes
+                up upside down on your unit, turn this on.
         config KSA_LCD_MOSI
             int "LCD MOSI"
             depends on KSA_LCD_ENABLE

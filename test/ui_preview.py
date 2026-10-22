@@ -20,9 +20,10 @@ def build():
     return out
 
 
-def frames(exe, sc, t0, n, step):
-    raw = subprocess.run([exe, str(sc), str(t0), str(n), str(step)], capture_output=True, check=True).stdout
-    a = np.frombuffer(raw, dtype="<u2").reshape(n, H, W)
+def frames(exe, sc, t0, n, step, portrait=False):
+    raw = subprocess.run([exe, str(sc), str(t0), str(n), str(step), "p" if portrait else "l"],
+                         capture_output=True, check=True).stdout
+    a = np.frombuffer(raw, dtype="<u2").reshape((n, W, H) if portrait else (n, H, W))
     rgb = np.stack([((a >> 11) & 31) * 255 // 31, ((a >> 5) & 63) * 255 // 63, (a & 31) * 255 // 31], -1)
     return rgb.astype(np.uint8)
 
@@ -51,6 +52,28 @@ def main(out_dir):
         for f in frames(exe, sc, 0, 48, 50):
             gif.append(Image.fromarray(f).resize((W * 3, H * 3), Image.NEAREST))
     gif[0].save(os.path.join(out_dir, "lumi.gif"), save_all=True, append_images=gif[1:], duration=50, loop=0)
+
+    # Portrait (the dongle standing with its plug away from you): sheet + GIF
+    PS = 3
+    tiles = []
+    for sc, name in enumerate(SCENES):
+        f = frames(exe, sc, 1000, 1, 1, portrait=True)[0]
+        tile = Image.fromarray(f).resize((H * PS, W * PS), Image.NEAREST)
+        canvas = Image.new("RGB", (H * PS + 20, W * PS + 40), (12, 12, 14))
+        canvas.paste(tile, (10, 34))
+        ImageDraw.Draw(canvas).text((10, 10), name[:30], fill=(220, 220, 230))
+        tiles.append(canvas)
+    cols = 6
+    tw, th = tiles[0].size
+    sheet = Image.new("RGB", (cols * tw, ((len(tiles) + cols - 1) // cols) * th), (12, 12, 14))
+    for i, t in enumerate(tiles):
+        sheet.paste(t, ((i % cols) * tw, (i // cols) * th))
+    sheet.save(os.path.join(out_dir, "screen_states_portrait.png"))
+    gif = []
+    for sc in (7, 8, 5, 9, 10, 2):
+        for f in frames(exe, sc, 0, 48, 50, portrait=True):
+            gif.append(Image.fromarray(f).resize((H * PS, W * PS), Image.NEAREST))
+    gif[0].save(os.path.join(out_dir, "lumi_portrait.gif"), save_all=True, append_images=gif[1:], duration=50, loop=0)
     print("wrote", out_dir)
 
 

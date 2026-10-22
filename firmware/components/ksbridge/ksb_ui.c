@@ -1,6 +1,9 @@
 // Screen (ST7735, landscape 160x80), APA102 LED and the BOOT button.
-// Panel setup mirrors LILYGO's T-Dongle-S3 lcd example: BGR, inverted colors,
-// swap_xy + mirror_y, gap (1, 26), byte-swapped RGB565 over SPI.
+// Panel setup follows LILYGO's T-Dongle-S3 lcd example: BGR, inverted colors,
+// byte-swapped RGB565 over SPI; landscape = swap_xy + gap (1, 26), portrait =
+// no swap + gap (26, 1), both with mirror_y. The 0.96" 80x160 glass sits at
+// offset (26, 1) in the ST7735's 132x162 RAM, symmetric on both sides, so a
+// 180-degree flip (toggle both mirror bits) keeps the same gap.
 #include <string.h>
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
@@ -62,9 +65,18 @@ static bool lcd_init(void)
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
     esp_lcd_panel_invert_color(s_panel, true);
+#if CONFIG_KSA_LCD_PORTRAIT
+    esp_lcd_panel_set_gap(s_panel, 26, 1);
+    esp_lcd_panel_swap_xy(s_panel, false);
+#else
     esp_lcd_panel_set_gap(s_panel, 1, 26);
     esp_lcd_panel_swap_xy(s_panel, true);
+#endif
+#if CONFIG_KSA_LCD_FLIP
+    esp_lcd_panel_mirror(s_panel, true, false);
+#else
     esp_lcd_panel_mirror(s_panel, false, true);
+#endif
     esp_lcd_panel_disp_on_off(s_panel, true);
 
     gpio_config_t bl = {.pin_bit_mask = 1ULL << CONFIG_KSA_LCD_BL, .mode = GPIO_MODE_OUTPUT};
@@ -78,7 +90,11 @@ static void lcd_draw(const ksui_view_t *v, uint32_t now)
     ksui_render(s_fb, v, now);
     xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200)); // previous DMA finished with s_tx
     for (int i = 0; i < KSUI_W * KSUI_H; i++) s_tx[i] = (uint16_t)((s_fb[i] >> 8) | (s_fb[i] << 8));
+#if CONFIG_KSA_LCD_PORTRAIT
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, KSUI_H, KSUI_W, s_tx);
+#else
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, KSUI_W, KSUI_H, s_tx);
+#endif
 }
 #endif
 
@@ -150,6 +166,9 @@ static void ui_task(void *arg)
     for (;;) {
         uint32_t now = now_ms();
         ksb_bridge_view(&view);
+#if CONFIG_KSA_LCD_ENABLE && CONFIG_KSA_LCD_PORTRAIT
+        view.portrait = 1;
+#endif
 #if CONFIG_KSA_LCD_ENABLE
         if (lcd_ok) lcd_draw(&view, now);
 #endif

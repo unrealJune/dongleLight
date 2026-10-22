@@ -89,6 +89,17 @@ canvas#screen { display: block; width: 100%; aspect-ratio: 2 / 1; image-renderin
 .holdbar { width: 46px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .holdbar i { display: block; height: 100%; width: 0; background: var(--amber); }
 
+/* portrait: standing dongle, plug at the top (pointing away from you) */
+.dongle.portrait { flex-direction: column; width: min(100%, 230px); }
+.dongle.portrait .plug { flex: 0 0 auto; width: 54%; aspect-ratio: 1.25 / 1; border-radius: 4px 4px 0 0; }
+.dongle.portrait .plug::before, .dongle.portrait .plug::after { top: 28%; bottom: auto; width: 13%; height: 34%; }
+.dongle.portrait .plug::before { left: 26%; } .dongle.portrait .plug::after { left: auto; right: 26%; }
+.dongle.portrait .body { flex-direction: column; width: 100%; border-radius: 6px 6px 26px 26px; padding: 9% 9% 10%; gap: 18px; }
+.dongle.portrait .bezel { width: 100%; padding: 4%; }
+.dongle.portrait canvas#screen { aspect-ratio: 1 / 2; }
+.dongle.portrait .side { grid-auto-flow: column; align-items: center; gap: 22px; }
+.away { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .12em; }
+
 /* ---------- strips ---------- */
 .strips { width: min(100%, 560px); display: grid; gap: 14px; }
 .strip { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; gap: 12px; }
@@ -171,10 +182,11 @@ canvas#real { display: block; }
 
   <div class="stage">
     <section class="bench" aria-label="The dongle">
-      <div class="dongle">
+      <div class="away" id="away" aria-hidden="true">↑ USB plug, pointing away from you</div>
+      <div class="dongle portrait" id="dongle">
         <div class="plug" aria-hidden="true"></div>
         <div class="body">
-          <div class="bezel"><canvas id="screen" width="160" height="80" aria-label="Lumi's screen"></canvas></div>
+          <div class="bezel"><canvas id="screen" width="80" height="160" aria-label="Lumi's screen"></canvas></div>
           <div class="side">
             <div class="led" id="led" title="APA102 status LED"></div>
             <div class="boot">
@@ -197,10 +209,14 @@ canvas#real { display: block; }
 
       <div class="lifebar">
         <button class="chip" id="lifeToggle" aria-expanded="false" aria-controls="life">Show life size</button>
+        <div class="seg" role="group" aria-label="Screen orientation">
+          <button data-orient="p" aria-pressed="true">portrait</button>
+          <button data-orient="l" aria-pressed="false">landscape</button>
+        </div>
       </div>
 
       <div class="life" id="life" hidden>
-        <h3>Actual size: 0.96″ panel, 21.8 × 10.9 mm</h3>
+        <h3 id="lifeTitle">Actual size: 0.96″ panel, 10.9 × 21.8 mm</h3>
         <div class="life-real">
           <div class="glass"><canvas id="real" aria-label="Lumi's screen at real size"></canvas></div>
           <div class="ruler" id="ruler"><i id="cm"></i>1 cm</div>
@@ -292,7 +308,7 @@ canvas#real { display: block; }
   const bytes = Uint8Array.from(atob(WASM), c => c.charCodeAt(0));
   const canvas = document.getElementById("screen");
   const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(160, 80);
+  let portrait = true, img = ctx.createImageData(80, 160);
   const $ = id => document.getElementById(id);
   const cap = $("caption");
   const t0 = performance.now();
@@ -310,6 +326,7 @@ canvas#real { display: block; }
 
     function reset() {
       x.sim_init(str("CARD"));
+      x.sim_set_portrait(portrait ? 1 : 0); // keep the chosen orientation across resets
       lamps = 2; mapOrder = []; x.sim_lamps(2, 0);
       updateMap(); say("Both strips are claimed and orange. Try a devbox's “needs you”.", true);
     }
@@ -413,10 +430,23 @@ canvas#real { display: block; }
     const PANEL_W_MM = 0.96 * 25.4 * 2 / Math.sqrt(5), PANEL_H_MM = PANEL_W_MM / 2; // 21.81 x 10.90
     const CARD_W_MM = 85.60, CARD_H_MM = 53.98;                                    // ISO/IEC 7810 ID-1
     const real = $("real"), rctx = real.getContext("2d");
+    function setOrientation(p) {
+      portrait = p;
+      x.sim_set_portrait(p ? 1 : 0);
+      canvas.width = p ? 80 : 160; canvas.height = p ? 160 : 80;
+      img = ctx.createImageData(canvas.width, canvas.height);
+      $("dongle").classList.toggle("portrait", p);
+      $("away").hidden = !p;
+      document.querySelectorAll("[data-orient]").forEach(b => b.setAttribute("aria-pressed", String((b.dataset.orient === "p") === p)));
+      $("lifeTitle").textContent = "Actual size: 0.96″ panel, " + (p ? "10.9 × 21.8" : "21.8 × 10.9") + " mm";
+      layoutLife();
+    }
+    document.querySelectorAll("[data-orient]").forEach(b => b.addEventListener("click", () => setOrientation(b.dataset.orient === "p")));
     let ppm = 96 / 25.4, lifeOn = false;
     try { const s = parseFloat(localStorage.getItem("lumi.ppm")); if (s > 1 && s < 20) ppm = s; } catch (e) {}
     function layoutLife() {
-      const dpr = window.devicePixelRatio || 1, w = PANEL_W_MM * ppm, h = PANEL_H_MM * ppm;
+      const dpr = window.devicePixelRatio || 1;
+      const w = (portrait ? PANEL_H_MM : PANEL_W_MM) * ppm, h = (portrait ? PANEL_W_MM : PANEL_H_MM) * ppm;
       real.style.width = w + "px"; real.style.height = h + "px";
       real.width = Math.max(1, Math.round(w * dpr)); real.height = Math.max(1, Math.round(h * dpr));
       $("cm").style.width = (10 * ppm) + "px";
@@ -437,6 +467,7 @@ canvas#real { display: block; }
     });
     window.addEventListener("resize", () => lifeOn && layoutLife());
     layoutLife();
+    setOrientation(true);
 
     // ---- render loop
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -449,7 +480,7 @@ canvas#real { display: block; }
         $("holdfill").style.background = held >= 10000 ? "var(--warn)" : held >= 3000 ? "var(--amber)" : "var(--muted)";
       }
       const p = x.sim_render(t);
-      const px = new Uint16Array(x.memory.buffer, p, 160 * 80), d = img.data;
+      const px = new Uint16Array(x.memory.buffer, p, 160 * 80), d = img.data; // same pixel count either way
       for (let i = 0, j = 0; i < px.length; i++, j += 4) {
         const v = px[i];
         d[j] = ((v >> 11) & 31) * 255 / 31; d[j + 1] = ((v >> 5) & 63) * 255 / 63; d[j + 2] = (v & 31) * 255 / 31; d[j + 3] = 255;
@@ -458,7 +489,7 @@ canvas#real { display: block; }
       if (lifeOn) {
         // Real pixels are smaller than most monitors' pixels: let the browser
         // average them, which is roughly what your eye does with the real panel.
-        rctx.imageSmoothingEnabled = real.width < 160;
+        rctx.imageSmoothingEnabled = real.width < canvas.width;
         rctx.imageSmoothingQuality = "high";
         rctx.drawImage(canvas, 0, 0, real.width, real.height);
       }

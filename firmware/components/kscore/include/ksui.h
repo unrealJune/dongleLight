@@ -9,8 +9,9 @@
 extern "C" {
 #endif
 
-#define KSUI_W 160
+#define KSUI_W 160            // landscape; portrait is KSUI_H wide x KSUI_W tall
 #define KSUI_H 80
+#define KSUI_PIXELS (KSUI_W * KSUI_H)
 
 typedef enum { KSUI_LINK_BOOT, KSUI_LINK_SCANNING, KSUI_LINK_CONNECTED } ksui_link_t;
 typedef enum { KSUI_CLAIM_NONE, KSUI_CLAIM_SEARCHING, KSUI_CLAIM_OK, KSUI_CLAIM_NONE_FOUND,
@@ -33,12 +34,14 @@ typedef struct {
     uint8_t claim_slot;         // lamp index the claim is about
     uint32_t claim_ms;          // when the claim state last changed
     uint32_t button_held_ms;    // BOOT held this long (0 = not held)
+    uint8_t portrait;           // 1: 80 wide x 160 tall, top = USB plug end
 } ksui_view_t;
 
 #define KSUI_HOLD_CLAIM_MS 3000
 #define KSUI_HOLD_FORGET_MS 10000
 
-// Render into fb (row-major, native-endian RGB565).
+// Render into fb (row-major, native-endian RGB565): 160x80 in landscape,
+// 80x160 in portrait. Same pixel count either way.
 void ksui_render(uint16_t *fb, const ksui_view_t *v, uint32_t now_ms);
 
 #ifdef __cplusplus

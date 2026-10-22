@@ -85,8 +85,9 @@ static int run(char **argv)
     uint32_t t0 = (uint32_t)atoi(argv[2]);
     int frames = atoi(argv[3]), step = atoi(argv[4]);
     static ksui_view_t v;
-    static uint16_t fb[KSUI_W * KSUI_H];
+    static uint16_t fb[KSUI_PIXELS];
     setup(&v, sc, t0);
+    v.portrait = argv[5] && argv[5][0] == 'p';
     for (int f = 0; f < frames; f++) {
         ksui_render(fb, &v, t0 + (uint32_t)(f * step));
         fwrite(fb, sizeof fb, 1, stdout);

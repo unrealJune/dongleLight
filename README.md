@@ -17,7 +17,7 @@ Claude Code hook ─► ks.py ─► smart card redirect ─► ESP32-S3 dongle 
 picked per lamp from its advertised name. (The `ks` names in the code are
 historical: the project started on KS lamps.)
 
-![Lumi](docs/lumi.gif)
+![Lumi](docs/lumi_portrait.gif)
 
 ## Two firmwares, pick one
 
@@ -149,6 +149,14 @@ re-sending the same error doesn't. Up to 8 devboxes are tracked; quiet ones
 are evicted first.
 
 ## Lumi
+
+**Orientation:** the default is portrait, 80 × 160, with the dongle standing and the
+USB plug pointing away from you, so the top of the screen is the plug end. Lumi
+and the lamp swatches sit on top, with the "who needs you" line and the agent
+list below. If Lumi comes up upside down on your unit, turn on *Rotate the
+screen 180 degrees* (`CONFIG_KSA_LCD_FLIP`). Landscape is still available
+(`CONFIG_KSA_LCD_LANDSCAPE`). Real size is about 10.9 × 21.8 mm, so names
+are about 1 mm tall; Lumi's color, the amber border and the `!` carry the urgent stuff.
 
 **Emulator:** `tools/lumi-sim/build.sh` compiles the real model and screen
 renderer (`firmware/components/kscore`) to WebAssembly with zig

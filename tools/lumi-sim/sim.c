@@ -31,6 +31,7 @@ EXPORT void sim_init(const char *transport_card)
     memset(&v, 0, sizeof v);
     ksb_init(&v.model);
     v.transport = transport_card[0] == 'A' ? "AUDIO" : "CARD";
+    v.portrait = 1;
     v.n_lamps = 2;
     strcpy(v.lamps[0].name, "Triones-1A2B");
     strcpy(v.lamps[1].name, "Triones-77C0");
@@ -115,6 +116,8 @@ EXPORT void sim_lamps(int n, int searching_mask)
 }
 
 EXPORT void sim_button_hold(uint32_t ms) { v.button_held_ms = ms; }
+
+EXPORT void sim_set_portrait(int on) { v.portrait = on != 0; }
 
 EXPORT void sim_claim(int state, int slot)
 {
