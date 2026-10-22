@@ -329,3 +329,74 @@ const char *ksb_state_name(uint8_t state)
     static const char *names[KSA_SIG_COUNT] = {"idle", "working", "done", "error", "needs you"};
     return state < KSA_SIG_COUNT ? names[state] : "?";
 }
+
+void ksb_expect(const ks_profile_t *p, const ksb_scene_t *s, ksb_expect_t *e)
+{
+    uint8_t pk[2][KS_MAX_PACKET];
+    size_t len[2];
+    memset(e, 0, sizeof *e);
+    int n = ksb_packets(p, s, pk, len);
+    e->on = s->kind != KSB_SCENE_OFF;
+    if (n < 2) return;
+    if (pk[1][0] == 0x56 && len[1] == 7 && pk[1][5] == 0xF0) { // Triones static color
+        e->has_rgb = true;
+        e->r = pk[1][1];
+        e->g = pk[1][2];
+        e->b = pk[1][3];
+    } else if (pk[1][0] == 0xBB && len[1] == 4) {               // Triones built-in effect
+        e->has_pattern = true;
+        e->pattern = pk[1][1];
+    }
+}
+
+ksb_check_t ksb_check(const ksb_expect_t *e, const ks_lamp_state_t *st)
+{
+    if (st->on != e->on) return KSB_CHECK_MISMATCH;
+    if (!e->on) return KSB_CHECK_MATCH;
+    if (e->has_rgb) {
+        return (st->r == e->r && st->g == e->g && st->b == e->b) ? KSB_CHECK_MATCH : KSB_CHECK_MISMATCH;
+    }
+    if (e->has_pattern) return st->pattern == e->pattern ? KSB_CHECK_MATCH : KSB_CHECK_UNSURE;
+    return KSB_CHECK_UNSURE;
+}
+
+static bool triones_effect(uint8_t pattern) { return pattern >= 0x25 && pattern <= 0x38; }
+
+bool ksb_drift(const ksb_expect_t *e, const ks_lamp_state_t *st, const ks_lamp_state_t *prev)
+{
+    if (st->on != e->on) return true;
+    if (!st->on) return false;
+    if (triones_effect(st->pattern) && !(e->has_pattern && st->pattern == e->pattern)) return true;
+    if (e->has_rgb && (st->r != e->r || st->g != e->g || st->b != e->b)) {
+        return prev && prev->on && prev->r == st->r && prev->g == st->g && prev->b == st->b;
+    }
+    return false;
+}
+
+void ksb_adopt(ksb_model_t *m, const ks_profile_t *p, int lamp, const ks_lamp_state_t *st, uint32_t now,
+               ksb_scene_t *adopted, ksb_expect_t *e)
+{
+    if (lamp < 0 || lamp >= KSB_MAX_LAMPS) return;
+    ksb_scene_t s;
+    if (!st->on) {
+        s = (ksb_scene_t){.kind = KSB_SCENE_OFF};
+    } else if (triones_effect(st->pattern)) {
+        // Our effects cover 0x25 and 0x26..0x2C; strobes/jumps/cross-fades have no
+        // equivalent, so they're held as the closest (color loop) and the lamp's
+        // own pattern byte becomes what we expect to keep seeing.
+        uint8_t id = st->pattern >= 0x26 && st->pattern <= 0x2C ? (uint8_t)(0x84 + st->pattern - 0x26) : 0x82;
+        uint8_t delay = st->speed < 1 ? 1 : st->speed > 31 ? 31 : st->speed;
+        s = (ksb_scene_t){.kind = KSB_SCENE_EFFECT, .effect = id, .speed = (uint8_t)(100 - (delay - 1) * 100 / 30),
+                          .bright = 100};
+    } else {
+        s = rgb_scene(st->r, st->g, st->b, 100);
+    }
+    // Only ack what was actually showing on this lamp, then take its new state.
+    if (ksb_top_source_for(m, lamp) >= 0) ksb_ack(m, (uint8_t)(1u << lamp), now);
+    m->base[lamp] = s;
+    if (s.kind != KSB_SCENE_OFF) m->last_on[lamp] = s;
+    event(m, KSB_EV_MANUAL, -1, now);
+    ksb_desired(m, lamp, adopted);
+    ksb_expect(p, adopted, e);
+    if (e->has_pattern && triones_effect(st->pattern)) e->pattern = st->pattern;
+}

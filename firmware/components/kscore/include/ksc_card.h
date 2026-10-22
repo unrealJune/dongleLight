@@ -34,11 +34,15 @@ typedef struct {
     bool selected;
 } ksc_app_t;
 
+// OK = written (the lamp can't confirm); VERIFIED = the lamp reported back
+// exactly what was sent; MISMATCH = it reported something else even after a retry.
 enum { KSC_RESULT_OK = 0, KSC_RESULT_NO_LAMP = 1, KSC_RESULT_WRITE_FAILED = 2,
-       KSC_RESULT_UNSUPPORTED = 3, KSC_RESULT_NONE = 0xFF };
+       KSC_RESULT_UNSUPPORTED = 3, KSC_RESULT_MISMATCH = 4, KSC_RESULT_VERIFIED = 5,
+       KSC_RESULT_NONE = 0xFF };
 
 typedef struct {
     bool claimed, connected;
+    bool readback, verified;   // lamp reports state; last check matched
     char name[20];
 } ksc_lamp_info_t;
 
@@ -46,7 +50,8 @@ typedef struct {
 //   [0] version=2  [1] link (0 boot, 1 scanning, 2 any lamp connected)
 //   [2..3] desired gen (BE)  [4..5] applied gen (BE)  [6] last write result
 //   [7] n sources, then per source: id, state, acked, lamp (0 = all, 1..4), name_len, name...
-//   then n lamps, per lamp: flags (bit0 claimed, bit1 connected), name_len, name...
+//   then n lamps, per lamp: flags (bit0 claimed, bit1 connected, bit2 readback,
+//   bit3 verified), name_len, name...
 size_t ksc_status_encode(uint8_t *out, size_t cap, const ksb_model_t *m, uint8_t link,
                          uint16_t desired_gen, uint16_t applied_gen, uint8_t result,
                          const ksc_lamp_info_t *lamps, int n_lamps);

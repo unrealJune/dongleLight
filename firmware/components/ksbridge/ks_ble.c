@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -35,6 +36,14 @@ typedef struct {
     int rank;            // index of the chosen candidate in profile->write_chr
     bool ready;
     uint32_t gen;
+    // readback
+    uint16_t nval;       // notify characteristic value handle (0 = none)
+    int nrank;
+    bool readback;       // notifications enabled
+    bool dsc_done;       // descriptor walk finished (CCCD written or given up)
+    ks_lamp_state_t state;
+    volatile uint32_t state_seq;
+    uint32_t state_ms;
 } lamp_t;
 
 typedef struct { // persisted per lamp
@@ -126,6 +135,63 @@ static int candidate_rank(const ks_profile_t *p, const ble_uuid_t *u)
     return -1;
 }
 
+static int notify_rank(const ks_profile_t *p, const ble_uuid_t *u)
+{
+    if (u->type != BLE_UUID_TYPE_16) return -1;
+    uint16_t v = BLE_UUID16(u)->value;
+    for (int k = 0; k < KS_MAX_WRITE_CHRS && p->notify_chr[k]; k++)
+        if (p->notify_chr[k] == v) return k;
+    return -1;
+}
+
+static void mark_ready(int i, const char *readback_note)
+{
+    lamp_t *l = &s_lamp[i];
+    portENTER_CRITICAL(&s_mux);
+    l->ready = true;
+    l->gen++;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG, "lamp %d ready: %s (%s, write %04X, readback: %s)", i + 1, l->name, l->profile->family,
+             l->profile->write_chr[l->rank], readback_note);
+}
+
+static int on_cccd_written(uint16_t conn, const struct ble_gatt_error *err, struct ble_gatt_attr *attr, void *arg)
+{
+    int i = (int)(intptr_t)arg;
+    s_lamp[i].readback = err->status == 0;
+    mark_ready(i, err->status == 0 ? "on" : "CCCD write failed");
+    return 0;
+}
+
+// Walk the attributes after the notify value until its CCCD (0x2902) or the
+// next characteristic/service declaration.
+static int on_dsc(uint16_t conn, const struct ble_gatt_error *err, uint16_t chr_val, const struct ble_gatt_dsc *dsc,
+                  void *arg)
+{
+    int i = (int)(intptr_t)arg;
+    if (err->status == 0 && dsc) {
+        uint16_t u = dsc->uuid.u.type == BLE_UUID_TYPE_16 ? BLE_UUID16(&dsc->uuid.u)->value : 0;
+        if (u == BLE_GATT_DSC_CLT_CFG_UUID16) {
+            static const uint8_t enable[2] = {0x01, 0x00};
+            s_lamp[i].dsc_done = true;
+            if (ble_gattc_write_flat(conn, dsc->handle, enable, sizeof enable, on_cccd_written, arg) != 0) {
+                mark_ready(i, "CCCD write not started");
+            }
+            return BLE_HS_EDONE; // stop the walk
+        }
+        if (u == 0x2803 || u == 0x2800 || u == 0x2801) { // next char / service: no CCCD
+            s_lamp[i].dsc_done = true;
+            mark_ready(i, "no CCCD");
+            return BLE_HS_EDONE;
+        }
+        return 0;
+    }
+    if (s_lamp[i].dsc_done) return 0; // we already stopped the walk
+    s_lamp[i].dsc_done = true;
+    mark_ready(i, err->status == BLE_HS_EDONE ? "no CCCD" : "descriptor discovery failed");
+    return 0;
+}
+
 static int on_chr(uint16_t conn, const struct ble_gatt_error *err, const struct ble_gatt_chr *chr, void *arg)
 {
     int i = (int)(intptr_t)arg;
@@ -138,20 +204,42 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *err, const struct 
             l->val = chr->val_handle;
             l->props = chr->properties;
         }
+        int nr = notify_rank(l->profile, &chr->uuid.u);
+        if (nr >= 0 && (chr->properties & BLE_GATT_CHR_PROP_NOTIFY) && nr < l->nrank) {
+            l->nrank = nr;
+            l->nval = chr->val_handle;
+        }
         return 0;
     }
     if (err->status == BLE_HS_EDONE && l->val) {
-        portENTER_CRITICAL(&s_mux);
-        l->ready = true;
-        l->gen++;
-        portEXIT_CRITICAL(&s_mux);
-        ESP_LOGI(TAG, "lamp %d ready: %s (%s, write %04X)", i + 1, l->name, l->profile->family,
-                 l->profile->write_chr[l->rank]);
+        // Readback is optional: the lamp is usable either way, and ready is only
+        // set once the CCCD step settles so GATT procedures don't overlap.
+        if (!l->nval) {
+            mark_ready(i, "not supported");
+        } else if (ble_gattc_disc_all_dscs(conn, l->nval, 0xFFFF, on_dsc, arg) != 0) {
+            mark_ready(i, "descriptor discovery not started");
+        }
         return 0;
     }
     ESP_LOGE(TAG, "lamp %d: no writable %s characteristic (status %d)", i + 1, l->profile->family, err->status);
     ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
     return 0;
+}
+
+static void on_notify(int i, const struct ble_gap_event *event)
+{
+    lamp_t *l = &s_lamp[i];
+    if (event->notify_rx.attr_handle != l->nval) return;
+    uint8_t buf[32];
+    uint16_t len = 0;
+    if (ble_hs_mbuf_to_flat(event->notify_rx.om, buf, sizeof buf, &len) != 0 && len == 0) return;
+    ks_lamp_state_t st;
+    if (!ks_status_parse(l->profile, buf, len, &st)) return;
+    portENTER_CRITICAL(&s_mux);
+    l->state = st;
+    l->state_ms = now_ms();
+    l->state_seq++;
+    portEXIT_CRITICAL(&s_mux);
 }
 
 // ---------------------------------------------------------------- scanning
@@ -258,6 +346,10 @@ static int lamp_event(struct ble_gap_event *event, void *arg)
         l->conn = event->connect.conn_handle;
         l->val = 0;
         l->rank = KS_MAX_WRITE_CHRS;
+        l->nval = 0;
+        l->nrank = KS_MAX_WRITE_CHRS;
+        l->readback = false;
+        l->dsc_done = false;
         ble_gattc_disc_all_chrs(l->conn, 1, 0xFFFF, on_chr, arg);
         start_scan(); // other claimed lamps may still be missing
         return 0;
@@ -266,8 +358,12 @@ static int lamp_event(struct ble_gap_event *event, void *arg)
         portENTER_CRITICAL(&s_mux);
         l->conn = BLE_HS_CONN_HANDLE_NONE;
         l->ready = false;
+        l->readback = false;
         portEXIT_CRITICAL(&s_mux);
         start_scan();
+        return 0;
+    case BLE_GAP_EVENT_NOTIFY_RX:
+        on_notify(i, event);
         return 0;
     default:
         return 0;
@@ -404,6 +500,31 @@ void ks_ble_drop(int i)
     if (i < 0 || i >= s_n) return;
     uint16_t c = s_lamp[i].conn;
     if (c != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(c, BLE_ERR_REM_USER_CONN_TERM);
+}
+
+bool ks_ble_has_readback(int i)
+{
+    return i >= 0 && i < s_n && s_lamp[i].ready && s_lamp[i].readback;
+}
+
+int ks_ble_query(int i, ks_lamp_state_t *out, int timeout_ms)
+{
+    const ks_profile_t *p = ks_ble_ready(i, NULL);
+    uint8_t q[KS_MAX_PACKET];
+    size_t n;
+    if (!p || !s_lamp[i].readback || !(n = ks_pkt_query(p, q))) return -1;
+    uint32_t seq0 = s_lamp[i].state_seq;
+    if (ks_ble_write(i, q, n) != 0) return -2;
+    for (int waited = 0; waited < timeout_ms; waited += 20) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (s_lamp[i].state_seq != seq0) {
+            portENTER_CRITICAL(&s_mux);
+            *out = s_lamp[i].state;
+            portEXIT_CRITICAL(&s_mux);
+            return 0;
+        }
+    }
+    return -3; // no reply
 }
 
 void ks_ble_lamp_name(int i, char *out, size_t cap)

@@ -5,31 +5,33 @@
 // Triones write characteristic differs by controller batch; led-ble's priority
 // order (it notes FFE5 "potentially invalid, try last").
 #define TRIONES_CHRS {0xFFD5, 0xFFD9, 0xFFE9, 0xFFE5}
+// Where state replies arrive (led-ble's order); FFD4 confirmed on Iris's strips.
+#define TRIONES_NOTIFY {0xFFD0, 0xFFD4, 0xFFE0, 0xFFE4}
 
 static const ks_profile_t PROFILES[] = {
     // Triones / HappyLighting family (names from the HappyLighting app, ha-triones, led-ble)
-    {"Triones", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true},
-    {"LEDBLE", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true},
-    {"LEDBlue", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true},
-    {"QHM", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true},
-    {"BRGlight", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true},
-    {"Dream", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, false}, // led-ble: different effect set
+    {"Triones", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true, TRIONES_NOTIFY},
+    {"LEDBLE", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true, TRIONES_NOTIFY},
+    {"LEDBlue", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true, TRIONES_NOTIFY},
+    {"QHM", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true, TRIONES_NOTIFY},
+    {"BRGlight", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, true, TRIONES_NOTIFY},
+    {"Dream", "Triones", TRIONES_CHRS, KS_FMT_TRIONES, false, TRIONES_NOTIFY}, // led-ble: different effect set
     // KS family
-    {"KS03~", "KS", {0xAFD1}, KS_FMT_EXTENDED, true}, // hardware-tested upstream
-    {"KS03-", "KS", {0xFFF3}, KS_FMT_STANDARD, false},
-    {"KS04-", "KS", {0xFFF3}, KS_FMT_STANDARD, false},
-    {"KS01-", "KS", {0xAE01}, KS_FMT_STANDARD, false},
-    {"KS02-", "KS", {0xAE01}, KS_FMT_STANDARD, false},
-    {"KS04~", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS05-", "KS", {0xAE02}, KS_FMT_NONE, false},
-    {"KS07-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS08-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS09-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS10-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS11-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS12-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS13-", "KS", {0xAE10}, KS_FMT_NONE, false},
-    {"KS15~", "KS", {0xAFD3}, KS_FMT_NONE, false},
+    {"KS03~", "KS", {0xAFD1}, KS_FMT_EXTENDED, true, {0}}, // hardware-tested upstream
+    {"KS03-", "KS", {0xFFF3}, KS_FMT_STANDARD, false, {0}},
+    {"KS04-", "KS", {0xFFF3}, KS_FMT_STANDARD, false, {0}},
+    {"KS01-", "KS", {0xAE01}, KS_FMT_STANDARD, false, {0}},
+    {"KS02-", "KS", {0xAE01}, KS_FMT_STANDARD, false, {0}},
+    {"KS04~", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS05-", "KS", {0xAE02}, KS_FMT_NONE, false, {0}},
+    {"KS07-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS08-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS09-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS10-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS11-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS12-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS13-", "KS", {0xAE10}, KS_FMT_NONE, false, {0}},
+    {"KS15~", "KS", {0xAFD3}, KS_FMT_NONE, false, {0}},
 };
 
 static bool prefix_ci(const char *name, const char *prefix)
@@ -138,4 +140,30 @@ size_t ks_pkt_white(const ks_profile_t *p, uint8_t level, uint8_t *out)
     const uint8_t pkt[10] = {0x5A, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, level, 0x00, 0xA5};
     memcpy(out, pkt, 10);
     return 10;
+}
+
+size_t ks_pkt_query(const ks_profile_t *p, uint8_t *out)
+{
+    if (p->fmt != KS_FMT_TRIONES) return 0; // KS lamps don't answer usefully (upstream)
+    const uint8_t pkt[3] = {0xEF, 0x01, 0x77};
+    memcpy(out, pkt, 3);
+    return 3;
+}
+
+bool ks_status_parse(const ks_profile_t *p, const uint8_t *d, size_t len, ks_lamp_state_t *st)
+{
+    // light.py on real strips accepts >= 9 bytes starting 0x66; flux_led expects 11.
+    if (p->fmt != KS_FMT_TRIONES || len < 9 || d[0] != 0x66) return false;
+    if (d[2] != 0x23 && d[2] != 0x24) return false;
+    memset(st, 0, sizeof *st);
+    st->model = d[1];
+    st->on = d[2] == 0x23;
+    st->pattern = d[3];
+    st->mode = d[4];
+    st->speed = d[5];
+    st->r = d[6];
+    st->g = d[7];
+    st->b = d[8];
+    st->w = len > 9 ? d[9] : 0;
+    return true;
 }

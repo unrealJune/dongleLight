@@ -56,7 +56,8 @@ size_t ksc_status_encode(uint8_t *out, size_t cap, const ksb_model_t *m, uint8_t
     for (int l = 0; l < n_lamps; l++) {
         size_t ll = 0;
         while (ll < sizeof lamps[l].name - 1 && lamps[l].name[ll]) ll++;
-        out[n++] = (uint8_t)((lamps[l].claimed ? 1 : 0) | (lamps[l].connected ? 2 : 0));
+        out[n++] = (uint8_t)((lamps[l].claimed ? 1 : 0) | (lamps[l].connected ? 2 : 0) |
+                             (lamps[l].readback ? 4 : 0) | (lamps[l].verified ? 8 : 0));
         out[n++] = (uint8_t)ll;
         memcpy(out + n, lamps[l].name, ll);
         n += ll;

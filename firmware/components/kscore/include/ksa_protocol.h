@@ -23,12 +23,21 @@ typedef enum {
 #define KS_MAX_WRITE_CHRS 4
 
 typedef struct {
-    const char *prefix;                    // advertised-name prefix (case-insensitive)
-    const char *family;                    // "Triones" / "KS"
-    uint16_t write_chr[KS_MAX_WRITE_CHRS]; // candidates, in priority order, 0-terminated
+    const char *prefix;                     // advertised-name prefix (case-insensitive)
+    const char *family;                     // "Triones" / "KS"
+    uint16_t write_chr[KS_MAX_WRITE_CHRS];  // candidates, in priority order, 0-terminated
     ks_color_fmt_t fmt;
-    bool effects;                          // built-in effects usable
+    bool effects;                           // built-in effects usable
+    uint16_t notify_chr[KS_MAX_WRITE_CHRS]; // state-reply candidates; empty = no readback
 } ks_profile_t;
+
+// What a lamp reports about itself (Triones 0x66 reply; layout per flux_led
+// LEDENETOriginalRawState: 66 model power pattern mode speed R G B W ver).
+typedef struct {
+    bool on;
+    uint8_t model, pattern, mode, speed;
+    uint8_t r, g, b, w;
+} ks_lamp_state_t;
 
 // Longest-prefix match on the advertised name. NULL if not a known lamp.
 const ks_profile_t *ks_profile_for_name(const char *name);
@@ -45,6 +54,12 @@ size_t ks_pkt_effect(const ks_profile_t *p, uint8_t effect, uint8_t speed,
                      uint8_t brightness_pct, uint8_t *out);
 // Dedicated white channel; 0 if the family has none we can rely on.
 size_t ks_pkt_white(const ks_profile_t *p, uint8_t level, uint8_t *out);
+
+// State query (Triones EF 01 77); 0 if the family can't report state.
+size_t ks_pkt_query(const ks_profile_t *p, uint8_t *out);
+
+// Parse a state notification. Returns true for a valid state reply.
+bool ks_status_parse(const ks_profile_t *p, const uint8_t *data, size_t len, ks_lamp_state_t *st);
 
 #ifdef __cplusplus
 }

@@ -216,6 +216,100 @@ int main(void)
     CHECK(ksb_source_lamp(&m, fi) == 0, "a devbox keeps its lamp after going idle");
     CHECK(ksa_cmd_lamps(&on2) == 0x02 && ksa_cmd_lamps(&on) == 0x0F, "lamp mask decoding");
 
+    // ---- readback: parse (reply shape from Iris's light.py + flux_led layout)
+    const ks_profile_t *tri = ks_profile_for_name("Triones-FFFF30059586");
+    const ks_profile_t *ks3 = ks_profile_for_name("KS03~1234");
+    ks_lamp_state_t st;
+    uint8_t reply[11] = {0x66, 0x04, 0x23, 0x41, 0x00, 0x05, 0xFF, 0x88, 0x00, 0x00, 0x99};
+    CHECK(ks_status_parse(tri, reply, 11, &st) && st.on && st.r == 0xFF && st.g == 0x88 && st.b == 0, "parse 11-byte reply");
+    CHECK(ks_status_parse(tri, reply, 9, &st), "parse 9-byte reply (light.py minimum)");
+    CHECK(!ks_status_parse(tri, reply, 8, &st), "reject short reply");
+    reply[2] = 0x24;
+    CHECK(ks_status_parse(tri, reply, 11, &st) && !st.on, "power off parsed");
+    reply[2] = 0x55;
+    CHECK(!ks_status_parse(tri, reply, 11, &st), "reject bad power byte");
+    CHECK(!ks_status_parse(ks3, reply, 11, &st), "KS has no readback");
+    uint8_t q[4];
+    CHECK(ks_pkt_query(tri, q) == 3 && q[0] == 0xEF && q[1] == 0x01 && q[2] == 0x77, "Triones query EF 01 77");
+    CHECK(ks_pkt_query(ks3, q) == 0, "KS query unsupported");
+    CHECK(tri->notify_chr[1] == 0xFFD4, "FFD4 among notify candidates");
+
+    // ---- readback: expect + check
+    ksb_expect_t ex;
+    ksb_scene_t orange80 = {.kind = KSB_SCENE_RGB, .r = 255, .g = 136, .b = 0, .bright = 80};
+    ksb_expect(tri, &orange80, &ex);
+    CHECK(ex.on && ex.has_rgb && ex.r == 204 && ex.g == 109 && ex.b == 0, "expect uses the scaled bytes actually sent");
+    ks_lamp_state_t good = {.on = true, .r = 204, .g = 109, .b = 0};
+    ks_lamp_state_t wrong = {.on = true, .r = 0, .g = 0, .b = 255};
+    ks_lamp_state_t offst = {.on = false};
+    CHECK(ksb_check(&ex, &good) == KSB_CHECK_MATCH, "matching color verified");
+    CHECK(ksb_check(&ex, &wrong) == KSB_CHECK_MISMATCH, "different color is a mismatch");
+    CHECK(ksb_check(&ex, &offst) == KSB_CHECK_MISMATCH, "off when we sent a color is a mismatch");
+    ksb_scene_t offscene = {.kind = KSB_SCENE_OFF};
+    ksb_expect(tri, &offscene, &ex);
+    CHECK(ksb_check(&ex, &offst) == KSB_CHECK_MATCH && ksb_check(&ex, &good) == KSB_CHECK_MISMATCH, "off verified");
+    ksb_scene_t nyfx = {.kind = KSB_SCENE_EFFECT, .effect = 0x87, .speed = 70, .bright = 100};
+    ksb_expect(tri, &nyfx, &ex);
+    ks_lamp_state_t fx = {.on = true, .pattern = 0x29, .r = 12, .g = 9};
+    CHECK(ex.has_pattern && ex.pattern == 0x29 && ksb_check(&ex, &fx) == KSB_CHECK_MATCH, "effect pattern verified");
+    fx.pattern = 0x41;
+    CHECK(ksb_check(&ex, &fx) == KSB_CHECK_UNSURE, "effect with other pattern byte is unsure, not mismatch");
+    ksb_scene_t white = {.kind = KSB_SCENE_WHITE, .white = 255};
+    ksb_expect(tri, &white, &ex);
+    CHECK(ex.has_rgb && ex.r == 255 && ex.g == 255 && ex.b == 230, "white verified as the warm RGB we send");
+
+    // ---- adopt: remote changed lamp 2 while it showed an alert
+    ksb_init(&m);
+    ksb_set_lamp_count(&m, 2);
+    c = rgb(0, 0, 255, 100);
+    ksb_apply(&m, &c, 0);
+    c = sig(0xA1, KSA_SIG_WORKING, "box-a");
+    ksb_apply(&m, &c, 1);
+    c = sig(0xB2, KSA_SIG_NEEDS_YOU, "box-b");
+    ksb_apply(&m, &c, 2);
+    ksb_scene_t adopted;
+    ksb_expect_t aex;
+    ks_lamp_state_t remote_red = {.on = true, .pattern = 0x41, .r = 255, .g = 0, .b = 0};
+    ksb_adopt(&m, tri, 1, &remote_red, 3, &adopted, &aex);
+    CHECK(adopted.kind == KSB_SCENE_RGB && adopted.r == 255 && adopted.b == 0, "lamp 2 adopts the remote's red");
+    CHECK(ksb_top_source_for(&m, 1) < 0, "touching lamp 2 acked its alert");
+    ksb_desired(&m, 0, &s0);
+    CHECK(s0.kind == KSB_SCENE_RGB && s0.b == 255, "lamp 1 untouched");
+    CHECK(!ksb_drift(&aex, &remote_red, &remote_red), "adopted color isn't adopted again");
+    ks_lamp_state_t remote_off = {.on = false};
+    ksb_adopt(&m, tri, 0, &remote_off, 4, &adopted, &aex);
+    ksb_desired(&m, 0, &s0);
+    CHECK(s0.kind == KSB_SCENE_OFF, "remote off adopted");
+    ksa_cmd_t on1 = {.op = KSA_OP_POWER, .nargs = 2, .args = {1, 0x01}};
+    ksb_apply(&m, &on1, 5);
+    ksb_desired(&m, 0, &s0);
+    CHECK(s0.kind == KSB_SCENE_RGB && s0.b == 255, "power on after remote-off restores last color");
+
+    // ---- drift decisions
+    ksb_scene_t blue = {.kind = KSB_SCENE_RGB, .r = 0, .g = 0, .b = 255, .bright = 100};
+    ksb_expect(tri, &blue, &ex);
+    ks_lamp_state_t same = {.on = true, .pattern = 0x41, .b = 255};
+    ks_lamp_state_t green1 = {.on = true, .pattern = 0x41, .g = 255};
+    ks_lamp_state_t green2 = green1;
+    ks_lamp_state_t fade_a = {.on = true, .pattern = 0x41, .r = 40, .g = 200};
+    ks_lamp_state_t fade_b = {.on = true, .pattern = 0x41, .r = 90, .g = 120};
+    ks_lamp_state_t strobe = {.on = true, .pattern = 0x30, .speed = 16, .r = 255};
+    CHECK(!ksb_drift(&ex, &same, NULL), "no drift when lamp shows what we sent");
+    CHECK(ksb_drift(&ex, &offst, NULL), "power off by remote: drift at once");
+    CHECK(!ksb_drift(&ex, &green1, NULL), "new color seen once: wait");
+    CHECK(ksb_drift(&ex, &green2, &green1), "new color seen twice: drift");
+    CHECK(!ksb_drift(&ex, &fade_b, &fade_a), "changing RGB with no effect byte: never adopted");
+    CHECK(ksb_drift(&ex, &strobe, NULL), "remote effect (strobe) recognised at once");
+
+    ksb_init(&m);
+    ksb_adopt(&m, tri, 0, &strobe, 10, &adopted, &aex);
+    CHECK(adopted.kind == KSB_SCENE_EFFECT && adopted.effect == 0x82, "unmappable strobe held as color loop");
+    CHECK(!ksb_drift(&aex, &strobe, &strobe), "adopted strobe isn't re-adopted every poll");
+    ks_lamp_state_t purple = {.on = true, .pattern = 0x2B, .speed = 1};
+    ksb_adopt(&m, tri, 0, &purple, 11, &adopted, &aex);
+    CHECK(adopted.kind == KSB_SCENE_EFFECT && adopted.effect == 0x89 && adopted.speed == 100, "purple fade maps back");
+    CHECK(ksb_check(&aex, &purple) == KSB_CHECK_MATCH, "adopted effect verifies");
+
     printf(fails ? "%d FAILED\n" : "all logic tests passed\n", fails);
     return fails != 0;
 }

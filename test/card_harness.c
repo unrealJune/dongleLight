@@ -20,7 +20,10 @@ static int submit(const ksa_cmd_t *cmd, uint16_t *g, void *ctx)
 static size_t status(uint8_t *out, size_t cap, void *ctx)
 {
     (void)ctx;
-    ksc_lamp_info_t lamps[2] = {{true, true, "KS03~1A2B"}, {true, false, "KS03~77C0"}};
+    ksc_lamp_info_t lamps[2] = {
+        {.claimed = true, .connected = true, .readback = true, .verified = true, .name = "Triones-1A2B"},
+        {.claimed = true, .connected = false, .name = "KS03~77C0"},
+    };
     return ksc_status_encode(out, cap, &model, 2, gen, gen, KSC_RESULT_OK, lamps, 2);
 }
 

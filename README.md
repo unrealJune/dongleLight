@@ -47,6 +47,7 @@ before plugging it into a managed machine.
 | Card applet + CCID messages | **Host-tested** with the exact APDUs `ks.py` sends, incl. a Windows-style PIV probe |
 | Triones packets | Byte-identical to the real `trionesControl` over 202 commands (`test/xcheck_trionescontrol.py`); effect codes and speed encoding from flux_led / Home Assistant led-ble |
 | Triones characteristic | Discovered per lamp: first writable of `FFD5`, `FFD9`, `FFE9`, `FFE5` (led-ble's order; batches differ) |
+| Readback | Reply parsing, verify/mismatch, drift and adoption rules **host-tested** (`test/test_logic.c`). Reply layout from flux_led; power + RGB fields proven on your strips by `light.py`. Notify subscription compiles; **not yet run on hardware**. |
 | KS packets | Match upstream `golden_packets.json` |
 | Screen | Rendered on the host from the same C (`test/ui_preview.py` → `docs/`) |
 | Both firmwares | **Build clean** on ESP-IDF v5.4.2 (zero warnings in our code). **Not yet run on hardware.** |
@@ -155,6 +156,31 @@ errors or garbled input, gets a heart when you ack, sleeps (`z`) when the lamp
 is off, and looks around while searching. The antenna is blue while searching,
 green when linked, and amber or red for alerts. The right side lists the agents,
 most urgent first.
+
+## Readback (Triones strips)
+
+Triones controllers answer `EF 01 77` with their actual state:
+`66 model power pattern mode speed R G B W ver`. Your `light.py` confirmed
+the power and RGB fields on real hardware, using notifications on `FFD4`. The
+dongle subscribes to them on connect (from the candidates `FFD0`/`FFD4`/`FFE0`/`FFE4`,
+whichever has a CCCD) and uses them three ways:
+
+- **Verify every write.** About 0.4 s after a write it asks the strip what it's showing.
+  A static color must match the exact bytes sent. A mismatch gets one resend, and
+  then the result is reported honestly. In card mode, `ks.py` prints
+  `delivered: confirmed by the lamp`, `delivered: sent (lamp can't confirm)`, or
+  exits 1 with `lamp shows something else`.
+- **Notice hand-made changes.** Every 5 s, while idle, it polls each strip. If the IR
+  remote or the phone app changed it, the dongle **adopts** that as the strip's
+  new color instead of fighting you, and Lumi bounces. If an alert was showing on
+  that strip, **touching the light counts as an ack**. Power changes and remote
+  effects are adopted at once. A new static color is adopted only once two polls
+  agree, so a running effect isn't mistaken for a stream of colors.
+- **`ks.py status`** shows `connected, confirmed` per lamp when the last check matched.
+
+Effects can't be verified as strictly, because RGB changes while they run. A matching
+pattern byte counts as confirmed; anything else counts as "sent". KS lamps have no
+usable readback (per upstream), so everything works as before for them.
 
 ## Triones notes
 

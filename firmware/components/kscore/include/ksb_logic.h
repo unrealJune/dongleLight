@@ -92,6 +92,39 @@ int ksb_packets(const ks_profile_t *p, const ksb_scene_t *s,
 
 const char *ksb_state_name(uint8_t state);
 
+// ---- readback (lamps that report state, e.g. Triones)
+
+// What a lamp should report after being put into a scene, derived from the
+// exact packets ksb_packets() sends, so the check can't drift from the encoder.
+typedef struct {
+    bool on;
+    bool has_rgb;       // static color: R G B must match exactly
+    uint8_t r, g, b;
+    bool has_pattern;   // built-in effect: pattern byte should match (weak evidence)
+    uint8_t pattern;
+} ksb_expect_t;
+
+typedef enum { KSB_CHECK_MATCH, KSB_CHECK_MISMATCH, KSB_CHECK_UNSURE } ksb_check_t;
+
+void ksb_expect(const ks_profile_t *p, const ksb_scene_t *s, ksb_expect_t *out);
+
+// MATCH: the lamp shows what we sent. MISMATCH: power or a static color differs.
+// UNSURE: power is right but an effect can't be confirmed from the reply.
+ksb_check_t ksb_check(const ksb_expect_t *e, const ks_lamp_state_t *st);
+
+// Did someone change the lamp by hand? `prev` is the previous poll (or NULL).
+// Power changes and built-in effects count at once; a different static color
+// only once two polls agree (an effect started from the remote changes the
+// reported RGB every poll, and must not be adopted as a stream of colors).
+bool ksb_drift(const ksb_expect_t *e, const ks_lamp_state_t *now, const ks_lamp_state_t *prev);
+
+// Someone changed `lamp` by hand (IR remote, phone app). Make what it shows the
+// new base for that lamp, and treat the touch as acknowledging any alert that
+// was showing there. Fills *adopted with the scene now expected and *e with
+// what the lamp should keep reporting (so the same state isn't adopted again).
+void ksb_adopt(ksb_model_t *m, const ks_profile_t *p, int lamp, const ks_lamp_state_t *st, uint32_t now_ms,
+               ksb_scene_t *adopted, ksb_expect_t *e);
+
 #ifdef __cplusplus
 }
 #endif

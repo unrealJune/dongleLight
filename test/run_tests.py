@@ -68,9 +68,10 @@ def card_tests():
             fails += 1
     st = K.parse_status(bytes.fromhex(out[len(script) - 1])[:-2])
     names = {s["name"]: (s["state"], s["lamp"]) for s in st["sources"]}
-    lamps = [(l["name"], l["connected"]) for l in st["lamps"]]
+    lamps = [(l["name"], l["connected"], l["readback"], l["verified"]) for l in st["lamps"]]
     if (names != {"devbox-1": ("needs-you", 1), "train": ("working", 2)}
-            or lamps != [("KS03~1A2B", True), ("KS03~77C0", False)] or st["link"] != "connected"):
+            or lamps != [("Triones-1A2B", True, True, True), ("KS03~77C0", False, False, False)]
+            or st["link"] != "connected"):
         print("  FAIL card status parse:", st)
         fails += 1
     r = [bytes.fromhex(x) for x in out[len(script):]]

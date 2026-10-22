@@ -29,6 +29,11 @@ void ks_ble_drop(int lamp);                                     // reconnect
 
 void ks_ble_lamp_name(int lamp, char *out, size_t cap);
 
+// Readback (lamps that report state, e.g. Triones). Blocking query: sends the
+// state request and waits for the reply. 0 ok, <0 unsupported/failed/no reply.
+bool ks_ble_has_readback(int lamp);
+int ks_ble_query(int lamp, ks_lamp_state_t *out, int timeout_ms);
+
 void ks_ble_claim(void);       // claim one more lamp (strongest nearby)
 void ks_ble_forget_all(void);  // unclaim every lamp
 void ks_ble_claim_status(uint8_t *state, uint8_t *slot, uint32_t *since_ms);

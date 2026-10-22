@@ -203,7 +203,10 @@ def send_audio(op, args, channel, repeat=2, wav_path=None):
 
 AID = bytes([0xF0]) + b"KSLIGHT"
 INS_SUBMIT, INS_STATUS = 0x10, 0x20
-RESULTS = {0: "ok", 1: "no lamp connected", 2: "lamp write failed", 3: "not supported by this lamp", 0xFF: "pending"}
+RESULTS = {0: "sent (lamp can't confirm)", 1: "no lamp connected", 2: "lamp write failed",
+           3: "not supported by this lamp", 4: "lamp shows something else", 5: "confirmed by the lamp",
+           0xFF: "pending"}
+OK_RESULTS = {0, 5}
 LINKS = {0: "booting", 1: "searching for lamp", 2: "connected"}
 
 
@@ -229,7 +232,7 @@ def parse_status(data):
         raise CardError("unexpected status record %s (update ks.py or the firmware)" % data.hex())
     st = {"link": LINKS.get(data[1], "?"), "desired_gen": data[2] << 8 | data[3],
           "applied_gen": data[4] << 8 | data[5], "last_result": RESULTS.get(data[6], "?"),
-          "sources": [], "lamps": []}
+          "last_result_code": data[6], "sources": [], "lamps": []}
     n, i = data[7], 8
     for _ in range(n):
         sid, state, acked, lamp, nl = data[i:i + 5]
@@ -240,6 +243,7 @@ def parse_status(data):
     for _ in range(data[i]):
         flags, nl = data[i + 1], data[i + 2]
         st["lamps"].append({"claimed": bool(flags & 1), "connected": bool(flags & 2),
+                            "readback": bool(flags & 4), "verified": bool(flags & 8),
                             "name": data[i + 3:i + 3 + nl].decode("ascii", "replace")})
         i += 2 + nl
     return st
@@ -465,6 +469,8 @@ def describe(st):
     lines = []
     for n, lamp in enumerate(st["lamps"], 1):
         state = "connected" if lamp["connected"] else "claimed, searching" if lamp["claimed"] else "unclaimed"
+        if lamp["connected"] and lamp["readback"]:
+            state += ", confirmed" if lamp["verified"] else ", readback on"
         lines.append("lamp %d: %s (%s)" % (n, lamp["name"] or "-", state))
     if not st["lamps"]:
         lines.append("no lamps claimed yet: long-press BOOT near a lamp")
@@ -542,7 +548,7 @@ def main(argv=None):
                         return 0
                     st, done = b.wait_applied(gen)
                     say(("delivered: " if done else "timed out waiting: ") + st["last_result"])
-                    return 0 if done and st["last_result"] == "ok" else 1
+                    return 0 if done and st["last_result_code"] in OK_RESULTS else 1
                 finally:
                     b.close()
         channel = default_channel() if ns.channel is None else ns.channel % MAX_CHANNELS
