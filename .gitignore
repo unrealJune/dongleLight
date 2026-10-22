@@ -12,3 +12,6 @@ __pycache__/
 
 # local Python env
 .venv/
+
+# built emulator page
+tools/lumi-sim/lumi-sim.html

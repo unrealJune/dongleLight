@@ -150,6 +150,11 @@ are evicted first.
 
 ## Lumi
 
+**Emulator:** `tools/lumi-sim/build.sh` compiles the real model and screen
+renderer (`firmware/components/kscore`) to WebAssembly with zig
+(`pip install ziglang`) and writes `tools/lumi-sim/lumi-sim.html`, a playground
+with both devboxes, a BOOT button you can tap or hold, and the strips.
+
 Lumi glows whatever the strip is showing. She bounces with sparkles when a
 command lands and wobbles with a `!` when someone needs you. She frowns at
 errors or garbled input, gets a heart when you ack, sleeps (`z`) when the lamp
