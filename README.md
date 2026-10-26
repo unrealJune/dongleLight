@@ -1,15 +1,31 @@
 # dongleLight
 
-A physical "a Claude needs you" light that crosses the machine boundary.
-Claude Code sessions on locked-down cloud devboxes signal through RDP to a
+A physical "an agent needs you" light that crosses the machine boundary.
+GitHub Copilot CLI and Claude Code sessions on cloud devboxes signal through RDP to a
 USB dongle on your laptop, which drives Bluetooth LED strips and a little
 screen creature named Lumi.
 
 ```
 devbox(es)                  RDP                    your laptop                 Bluetooth
-Claude Code hook ─► ks.py ─► smart card redirect ─► ESP32-S3 dongle (T-Dongle) ─► LED strip(s)
-                          └► or audio redirect  ─►   screen + LED + button
+agent hook ─► WinUI app ─► RDP playback ─► USB speaker ─► ESP32-S3 dongle ─► LED strips
+                      ◄─ RDP recording ◄─ USB microphone ◄─ shared state
 ```
+
+## Native control plane
+
+`desktop\DongleLight` is the Windows 11 WinUI 3 / Mica application. It uses
+**duplex audio only**, with four leased devbox channels and dongle-authoritative
+shared colors, rules, lamp assignments, agent activity, and acknowledgements.
+Closing the window keeps its notification-area application running; sign-in
+startup and hook installation are opt-in.
+
+Build/publish with `desktop\publish.ps1`, then follow
+[the control-plane setup guide](desktop/README.md). The x64 app and updated
+audio firmware build successfully; host modem/model regressions and hook
+configuration tests pass. Physical USB duplex audio and a QHM controller's BLE
+discovery, persistence, and connection have been checked; simultaneous RDP
+microphone fan-out remains unverified. The legacy `ks.py` utility below is
+still available; it is not the native application's transport selector.
 
 **Supported strips:** Triones / HappyLighting controllers (names starting
 `Triones`, `LEDBLE`, `LEDBlue`, `QHM`, `BRGlight`, `Dream`), the same family
@@ -21,13 +37,13 @@ historical: the project started on KS lamps.)
 
 ## Two firmwares, pick one
 
-| | `firmware/card` (smart card) | `firmware/audio` (USB speaker) |
+| | `firmware/card` (legacy smart card) | `firmware/audio` (duplex USB audio) |
 | --- | --- | --- |
-| Dongle shows up as | CCID smart card reader | speaker "KS Light Bridge" |
-| Direction | **two-way**: `ks.py` gets "delivered ✓" or a real error | one-way |
+| Dongle shows up as | CCID smart card reader | speaker + microphone "KS Light Bridge" |
+| Direction | **two-way**: `ks.py` gets "delivered ✓" or a real error | native app: commands out, shared snapshots back; legacy `ks.py` remains playback-only |
 | Several devboxes | serialised by Windows' smart card service | 4 tone channels; simultaneous sends survive (see below) |
-| Needs | smart card redirection allowed for your RDP sessions | audio redirection (almost never blocked) |
-| Downside | an unusual USB device class on a corp machine | your laptop audio routing; ~2–5 s per command |
+| Needs | smart card redirection allowed for your RDP sessions | playback **and microphone** redirection for the native app |
+| Downside | an unusual USB device class on a corp machine | laptop audio routing and microphone fan-out; ~2–5 s per uplink command, slower shared-state confirmation |
 
 `ks.py` auto-detects: it uses the card when it finds a bridge reader, otherwise audio.
 
@@ -42,23 +58,27 @@ before plugging it into a managed machine.
 | Part | Status |
 | --- | --- |
 | Audio decoder + framing | **Host-tested**: Opus 32/16/12k-voip, AAC, MP3, 0.7% clock error, -45 dB, chime mid-frame, 60 s of junk → 0 false commands. Single channel survives Opus 6 kbps and 6 dB SNR. |
+| Duplex return stream | C/Python framing and Reed-Solomon parity agree; snapshot, burst-error recovery, noise, drift, Opus 16/32 kbps and AAC regressions pass. Actual RDP recording codec/routing is unverified. |
+| Simulated duplex integration | Real host workers and production C codecs/model complete command-to-state-to-return-audio round trips, including remote acknowledgement and shared rules. Run `python test/run_tests.py --duplex-only`; device I/O, RTOS scheduling and BLE remain simulated. |
 | Simultaneous channels (`test/multichannel.py`) | 1–2 at once: 100% through Opus ≥16k and AAC. 4 at once: 98–100% at Opus ≥24k, 71% at 16k. Opus 12k "voip" mode can't handle overlap. 0 false frames in 2000 decodes. |
 | Signal/ack/expiry logic, lamp mapping | **Host-tested** (`test/test_logic.c`): auto-assign, pinning, overflow, per-lamp acks and colors |
 | Card applet + CCID messages | **Host-tested** with the exact APDUs `ks.py` sends, incl. a Windows-style PIV probe |
 | Triones packets | Byte-identical to the real `trionesControl` over 202 commands (`test/xcheck_trionescontrol.py`); effect codes and speed encoding from flux_led / Home Assistant led-ble |
-| Triones characteristic | Discovered per lamp: first writable of `FFD5`, `FFD9`, `FFE9`, `FFE5` (led-ble's order; batches differ) |
-| Readback | Reply parsing, verify/mismatch, drift and adoption rules **host-tested** (`test/test_logic.c`). Reply layout from flux_led; power + RGB fields proven on your strips by `light.py`. Notify subscription compiles; **not yet run on hardware**. |
+| Triones characteristic | Discovered per lamp: first writable of `FFD5`, `FFD9`, `FFE9`, `FFE5` (led-ble's order; batches differ). A physical QHM controller connected using `FFD9` and accepted diagnostic writes. |
+| QHM discovery | Zero-padded advertisements are accepted. The captured packet and malformed/truncated cases have regressions; a physical controller was saved and reconnected after restoring normal audio firmware. |
+| Readback | Reply parsing, verify/mismatch, drift and adoption rules **host-tested** (`test/test_logic.c`). Reply layout from flux_led; power + RGB fields proven on your strips by `light.py` and hardware-confirmed on the dongle with a physical QHM controller (`FFD4` notify). |
 | KS packets | Match upstream `golden_packets.json` |
 | Screen | Rendered on the host from the same C (`test/ui_preview.py` → `docs/`) |
-| Both firmwares | **Build clean** on ESP-IDF v5.4.2 (zero warnings in our code). **Not yet run on hardware.** |
-| Multi-lamp BLE | Up to 4 simultaneous connections (`CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4`); claim flow and NVS persistence compile but are untested on hardware. |
+| Both firmwares | **Build clean** on ESP-IDF v5.4.2 (zero warnings in our code). Audio firmware has run on physical ESP32-S3 hardware; card firmware hardware bring-up remains unverified. |
+| Multi-lamp BLE | Up to 4 simultaneous connections (`CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4`); single-lamp claiming, NVS persistence, and reconnect verified on a QHM controller. Multiple simultaneous lamps remain unverified. |
 | Board pins | LCD 3/5/4/2/1, backlight 38, LED 40/39 come from LILYGO's own examples. The BOOT button is assumed to be GPIO0. |
 | RDP behaviour | Unverified: whether multiple sessions share one redirected reader cleanly, which audio codec/bitrate RDP uses, and per-app audio routing. |
 
 ## Bring-up, in order
 
-**0. Host tests** (Linux/WSL with gcc, ffmpeg, numpy, Pillow):
-`python3 test/run_tests.py` → `ALL PASSED`.
+**0. Host tests.** Install `host/requirements.txt` and `test/requirements.txt`;
+put FFmpeg on PATH. Linux/WSL uses gcc; Windows uses the test environment's
+`ziglang` compiler. Run `python test/run_tests.py` → `ALL PASSED`.
 
 **1. Bluetooth + screen alone.** Close the HappyLighting (or KS) app on your
 phone: each strip accepts one connection. Flash the audio firmware in debug mode:
@@ -90,11 +110,14 @@ After that the USB console is gone (TinyUSB owns the port), so to reflash,
 - *Card:* Windows loads its built-in CCID driver. It may toast that it
   couldn't install a driver for the *card*, which is fine. In your RDP connection
   settings, enable smart card redirection.
-- *Audio:* the dongle is a speaker. Route the RDP client's output to it in
+- *Audio:* the dongle is a speaker and microphone. Route the RDP client's output to it in
   Settings → System → Sound → Volume mixer, rather than making it the system
-  default. Untested whether that works per RDP window. Turn off enhancements.
+  default. Enable microphone recording redirection too, using the dongle's
+  microphone on the laptop. Untested whether fan-out works across simultaneous
+  RDP sessions. Turn off enhancements and microphone noise suppression.
 
-**4. Each devbox.** Copy `host/ks.py` (stdlib only), then:
+**4. Each devbox.** For the native app, follow [desktop setup](desktop/README.md).
+For the legacy CLI instead, copy `host/ks.py` (stdlib only), then:
 
 ```
 python ks.py status                 # card: shows the lamp and every agent

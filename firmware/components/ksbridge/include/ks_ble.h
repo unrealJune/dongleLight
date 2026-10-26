@@ -13,9 +13,6 @@
 #include "ksa_protocol.h"
 #include "ksb_logic.h"
 
-typedef enum { KS_CLAIM_IDLE, KS_CLAIM_SEARCHING, KS_CLAIM_OK, KS_CLAIM_NONE_FOUND,
-               KS_CLAIM_FULL, KS_CLAIM_FORGOT } ks_claim_state_t;
-
 void ks_ble_start(void);
 
 int ks_ble_lamp_count(void);   // claimed lamps (slots 0..n-1)

@@ -57,6 +57,34 @@ const ks_profile_t *ks_profile_for_name(const char *name)
     return best;
 }
 
+bool ks_adv_name(const uint8_t *data, size_t len, char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = 0;
+    if ((!data && len) || cap < 2) return false;
+    const uint8_t *name = NULL;
+    size_t name_len = 0;
+    bool complete = false;
+    for (size_t pos = 0; pos < len;) {
+        size_t field_len = data[pos++];
+        // Legacy controllers pad their 31-byte advertisement after this terminator.
+        if (!field_len) break;
+        if (field_len > len - pos) return false;
+        uint8_t type = data[pos];
+        if (field_len > 1 && (type == 0x09 || (type == 0x08 && !complete))) {
+            name = data + pos + 1;
+            name_len = field_len - 1;
+            complete = type == 0x09;
+        }
+        pos += field_len;
+    }
+    if (!name) return false;
+    size_t n = name_len < cap - 1 ? name_len : cap - 1;
+    memcpy(out, name, n);
+    out[n] = 0;
+    return true;
+}
+
 size_t ks_pkt_power(const ks_profile_t *p, bool on, uint8_t *out)
 {
     if (p->fmt == KS_FMT_TRIONES) {

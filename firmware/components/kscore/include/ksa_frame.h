@@ -6,6 +6,9 @@
 // Frames are delimited by silence (>= KSA_FRAME_END_MS with no tone).
 // CRC-8 poly 0x07, init 0x00, over every byte before the CRC.
 #pragma once
+
+// A maximum-size copy takes 2.56 s, plus up to 0.9 s between repeats.
+#define KSA_AUDIO_DEDUP_MS 4000
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,6 +31,10 @@ enum {
     KSA_OP_SIGNAL = 0x5, // [source id][lamp<<4 | state][name: 0..8 ASCII bytes]
                          //   lamp 0 = auto-assign, 1..4 = pin this devbox to that lamp
     KSA_OP_ACK    = 0x6, // [mask] acknowledge attention signals (the button acks all)
+    KSA_OP_STYLED = 0x7, // [id][lamp<<4|state][r][g][b][brightness][name 0..8]
+    KSA_OP_RULE   = 0x8, // [channel][provider][state][r][g][b][brightness][lamp]
+    KSA_OP_HELLO  = 0x9, // [owner id][channel][name 1..8]
+    KSA_OP_CLAIM  = 0xA, // [] pair the nearest unclaimed supported lamp
 };
 
 // Agent signal states, lowest to highest urgency.

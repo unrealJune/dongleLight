@@ -42,6 +42,9 @@ typedef struct {
 // Longest-prefix match on the advertised name. NULL if not a known lamp.
 const ks_profile_t *ks_profile_for_name(const char *name);
 
+// Extract a local name from bounded advertising fields, honoring zero termination.
+bool ks_adv_name(const uint8_t *data, size_t len, char *out, size_t cap);
+
 #define KS_MAX_PACKET 12
 
 size_t ks_pkt_power(const ks_profile_t *p, bool on, uint8_t *out);

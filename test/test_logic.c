@@ -310,6 +310,33 @@ int main(void)
     CHECK(adopted.kind == KSB_SCENE_EFFECT && adopted.effect == 0x89 && adopted.speed == 100, "purple fade maps back");
     CHECK(ksb_check(&aex, &purple) == KSB_CHECK_MATCH, "adopted effect verifies");
 
+    ksb_init(&m);
+    c = (ksa_cmd_t){.op = KSA_OP_STYLED, .nargs = 14,
+        .args = {0x11, KSA_SIG_WORKING, 12, 34, 56, 40, '1','2','3','4','5','6','7','8'}};
+    CHECK(ksb_apply(&m, &c, 100), "styled working accepted");
+    ksb_desired(&m, 0, &s);
+    CHECK(s.kind == KSB_SCENE_RGB && s.r == 12 && s.b == 56 && s.bright == 40,
+          "devbox color and brightness drive working scene");
+    c.args[1] = KSA_SIG_NEEDS_YOU;
+    ksb_apply(&m, &c, 200);
+    ksb_ack_all(&m, 300);
+    ksb_desired(&m, 0, &s);
+    CHECK(s.kind == KSB_SCENE_OFF, "physical ack restores base after custom alert");
+    ksb_apply(&m, &c, 400);
+    CHECK(ksb_top_source(&m) >= 0, "custom needs-you re-alerts");
+    ksa_cmd_t hello = {.op = KSA_OP_HELLO, .nargs = 5, .args = {12, 2, 'o', 'n', 'e'}};
+    CHECK(ksb_apply(&m, &hello, 500), "channel reservation accepted");
+    hello.args[0] = 13;
+    CHECK(!ksb_apply(&m, &hello, 600), "different owner cannot steal active channel");
+    ksb_tick(&m, 60500);
+    CHECK(ksb_apply(&m, &hello, 60501), "expired channel can be reserved");
+    c = (ksa_cmd_t){.op = KSA_OP_RULE, .nargs = 8, .args = {2, 1, 4, 1, 2, 3, 50, 3}};
+    CHECK(ksb_apply(&m, &c, 60600) && m.rules[2][1][4].bright == 50 &&
+          m.rules[2][1][4].lamp == 3 && m.rules_dirty, "shared rules retained for broadcast and persistence");
+    uint8_t styled_body[] = {0x57, 1, 4, 12, 34, 56, 100, 'n'};
+    CHECK(!ksa_cmd_from_body(styled_body, sizeof styled_body, &c), "custom signal validated");
+    styled_body[6] = 101;
+    CHECK(ksa_cmd_from_body(styled_body, sizeof styled_body, &c) != 0, "invalid custom brightness rejected");
     printf(fails ? "%d FAILED\n" : "all logic tests passed\n", fails);
     return fails != 0;
 }

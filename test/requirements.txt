@@ -1,0 +1,3 @@
+numpy>=2
+reedsolo>=1.7.0,<2
+ziglang>=0.14; sys_platform == "win32"

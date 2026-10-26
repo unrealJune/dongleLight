@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include "ksa_dtmf_rx.h"
 #include "ksa_frame.h"
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 static void on_frame(const uint8_t *b, size_t n, void *ctx)
 {
@@ -19,6 +23,9 @@ static void on_frame(const uint8_t *b, size_t n, void *ctx)
 
 int main(void)
 {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+#endif
     static ksa_rx_t rx[KSA_MAX_CHANNELS];
     for (int c = 0; c < KSA_MAX_CHANNELS; c++) ksa_rx_init(&rx[c], 48000, c, on_frame, (void *)(intptr_t)c);
     short in[2 * 480];

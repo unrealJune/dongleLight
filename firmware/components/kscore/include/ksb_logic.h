@@ -23,6 +23,9 @@ extern "C" {
 #define KSB_WORKING_TTL_MS (4u * 60u * 60u * 1000u)
 #define KSB_ACKED_TTL_MS (10u * 60u * 1000u)
 
+typedef enum { KS_CLAIM_IDLE, KS_CLAIM_SEARCHING, KS_CLAIM_OK, KS_CLAIM_NONE_FOUND,
+               KS_CLAIM_FULL, KS_CLAIM_FORGOT } ks_claim_state_t;
+
 typedef enum { KSB_SCENE_OFF, KSB_SCENE_RGB, KSB_SCENE_EFFECT, KSB_SCENE_WHITE } ksb_scene_kind_t;
 
 typedef struct {
@@ -39,7 +42,20 @@ typedef struct {
     uint8_t state;              // KSA_SIG_*
     bool acked;
     uint32_t since_ms;          // when state last changed
+    bool styled;
+    uint8_t r, g, b, bright;
 } ksb_source_t;
+
+typedef struct {
+    uint8_t r, g, b, bright, lamp;
+} ksb_rule_t;
+
+typedef struct {
+    bool used;
+    uint8_t id;
+    char name[KSA_SIGNAL_NAME_MAX + 1];
+    uint32_t seen_ms;
+} ksb_channel_t;
 
 typedef enum { KSB_EV_NONE, KSB_EV_MANUAL, KSB_EV_SIGNAL, KSB_EV_ACK, KSB_EV_BAD } ksb_event_kind_t;
 
@@ -54,6 +70,9 @@ typedef struct {
     uint8_t last_event;                  // ksb_event_kind_t, for the screen
     int8_t last_event_src;               // source index or -1
     uint32_t last_event_ms;
+    ksb_rule_t rules[4][2][KSA_SIG_COUNT];
+    ksb_channel_t channels[4];
+    bool rules_dirty;
 } ksb_model_t;
 
 void ksb_init(ksb_model_t *m);

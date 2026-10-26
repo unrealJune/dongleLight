@@ -246,12 +246,7 @@ static void on_notify(int i, const struct ble_gap_event *event)
 
 static bool adv_name(const struct ble_gap_disc_desc *d, char *out, size_t cap)
 {
-    struct ble_hs_adv_fields f;
-    if (ble_hs_adv_parse_fields(&f, d->data, d->length_data) != 0 || !f.name || !f.name_len) return false;
-    size_t n = f.name_len < cap - 1 ? f.name_len : cap - 1;
-    memcpy(out, f.name, n);
-    out[n] = 0;
-    return true;
+    return ks_adv_name(d->data, d->length_data, out, cap);
 }
 
 static void connect_slot(int i)
@@ -428,6 +423,8 @@ static void close_window(void *arg)
 
 void ks_ble_claim(void)
 {
+    // Multiple devboxes must not restart an already-running manual search.
+    if (s_claim_active && !s_claim_auto) return;
     if (s_n >= KSB_MAX_LAMPS) {
         set_claim_state(KS_CLAIM_FULL, KSB_MAX_LAMPS - 1);
         return;

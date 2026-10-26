@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22621.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <Content Include="..\..\host\ks.py;..\..\host\ks_audio.py;..\..\host\ks_winmm.py;..\..\host\requirements.txt">
+      <Link>host\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <Target Name="PublishNativeXamlResources" AfterTargets="Publish">
+    <ItemGroup>
+      <NativeXamlResource Include="$(TargetDir)**\*.xbf" />
+    </ItemGroup>
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pri" DestinationFolder="$(PublishDir)" />
+    <Copy SourceFiles="@(NativeXamlResource)"
+          DestinationFiles="@(NativeXamlResource->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+</Project>

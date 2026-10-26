@@ -14,6 +14,7 @@
 #include "ks_ble.h"
 #include "ksb_logic.h"
 #include "ksc_card.h"
+#include "ksbus.h"
 #include "ksb_ui_internal.h"
 
 static const char *TAG = "ksb";
@@ -33,9 +34,12 @@ static uint32_t s_error_until;
 static uint32_t s_boot_ms;
 static volatile uint32_t s_button_held_ms;
 static volatile bool s_verified[KSB_MAX_LAMPS];
+static uint8_t s_force_lamps;
+static bool s_base_dirty;
 static const char *s_transport = "";
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+static bool is_manual_op(uint8_t op) { return op >= KSA_OP_POWER && op <= KSA_OP_WHITE; }
 
 // ---------------------------------------------------------------- mapping persistence
 
@@ -68,10 +72,39 @@ static void load_map(void)
 int ksb_bridge_submit(const ksa_cmd_t *cmd, uint16_t *gen)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    bool ok = ksb_apply(&s_model, cmd, now_ms());
-    if (ok) s_gen++;
+    bool ok = cmd->op == KSA_OP_CLAIM || ksb_apply(&s_model, cmd, now_ms());
+    if (ok) {
+        s_gen++;
+        if (is_manual_op(cmd->op)) {
+            s_force_lamps |= ksa_cmd_lamps(cmd);
+            s_base_dirty = true;
+        }
+    }
     if (gen) *gen = s_gen;
     xSemaphoreGive(s_lock);
+    if (ok && cmd->op == KSA_OP_CLAIM) ks_ble_claim();
+    if (ok) xTaskNotifyGive(s_task);
+    return ok ? 0 : -1;
+}
+
+int ksb_bridge_audio_submit(const ksa_cmd_t *cmd, int channel)
+{
+    if (channel < 0 || channel >= 4) return -1;
+    uint32_t now = now_ms();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const ksb_channel_t *owner = &s_model.channels[channel];
+    bool allowed = cmd->op == KSA_OP_HELLO ||
+                   (owner->used && now - owner->seen_ms < 60000);
+    bool ok = allowed && (cmd->op == KSA_OP_CLAIM || ksb_apply(&s_model, cmd, now));
+    if (ok) {
+        s_gen++;
+        if (is_manual_op(cmd->op)) {
+            s_force_lamps |= ksa_cmd_lamps(cmd);
+            s_base_dirty = true;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (ok && cmd->op == KSA_OP_CLAIM) ks_ble_claim();
     if (ok) xTaskNotifyGive(s_task);
     return ok ? 0 : -1;
 }
@@ -108,6 +141,20 @@ size_t ksb_bridge_status(uint8_t *out, size_t cap)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     size_t len = ksc_status_encode(out, cap, &s_model, any ? KSUI_LINK_CONNECTED : KSUI_LINK_SCANNING,
                                    s_gen, s_applied, s_result, lamps, n);
+    xSemaphoreGive(s_lock);
+    return len;
+}
+
+size_t ksb_bridge_bus_status(uint8_t *out, size_t cap)
+{
+    ksbus_claim_t claim;
+    ks_ble_claim_status(&claim.state, &claim.slot, &claim.since_ms);
+    ksc_lamp_info_t lamps[KSB_MAX_LAMPS];
+    bool any;
+    int n = lamp_info(lamps, &any);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    size_t len = ksbus_snapshot(out, cap, &s_model, any ? 2 : 1,
+                               s_gen, s_applied, s_result, lamps, n, now_ms(), &claim);
     xSemaphoreGive(s_lock);
     return len;
 }
@@ -190,11 +237,13 @@ static outcome_t verify(int l, const ks_profile_t *p, const ksb_scene_t *sc, lam
     ksb_expect(p, sc, &s->expect);
     s->have_prev = false;
     if (!ks_ble_has_readback(l)) return OUT_OK;
-    for (int attempt = 0; attempt < 2; attempt++) {
+    for (int attempt = 0; attempt < 3; attempt++) {
         vTaskDelay(pdMS_TO_TICKS(VERIFY_DELAY_MS));
         ks_lamp_state_t st;
         if (ks_ble_query(l, &st, QUERY_TIMEOUT_MS) != 0) {
             ESP_LOGW(TAG, "lamp %d: no state reply; unverified", l + 1);
+            s->last_poll_ms = now_ms();
+            s_verified[l] = false;
             return OUT_OK;
         }
         s->last_poll_ms = now_ms();
@@ -205,7 +254,7 @@ static outcome_t verify(int l, const ks_profile_t *p, const ksb_scene_t *sc, lam
         case KSB_CHECK_UNSURE:
             return OUT_OK;
         case KSB_CHECK_MISMATCH:
-            if (attempt == 0) {
+            if (attempt < 2) {
                 ESP_LOGW(TAG, "lamp %d: reports %s %02x%02x%02x, expected %s %02x%02x%02x; resending", l + 1,
                          st.on ? "on" : "off", st.r, st.g, st.b, s->expect.on ? "on" : "off", s->expect.r,
                          s->expect.g, s->expect.b);
@@ -240,6 +289,7 @@ static void poll_lamp(int l, const ks_profile_t *p, lamp_sync_t *s)
     ksb_scene_t adopted;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     ksb_adopt(&s_model, p, l, &st, now_ms(), &adopted, &s->expect);
+    s_base_dirty = true;
     xSemaphoreGive(s_lock);
     s->written = adopted; // the lamp already shows it: nothing to write
     s->valid = true;
@@ -264,22 +314,53 @@ static void reconcile_task(void *arg)
         }
 
         ksb_scene_t want[KSB_MAX_LAMPS];
-        uint8_t map_ids[KSB_MAX_LAMPS], map_valid = 0;
-        bool map_dirty;
+        ksb_scene_t base_save[2][KSB_MAX_LAMPS];
+        uint8_t map_ids[KSB_MAX_LAMPS], map_valid = 0, force_lamps = 0;
+        bool map_dirty, rules_dirty, base_dirty;
+        ksb_rule_t rules[4][2][KSA_SIG_COUNT];
         xSemaphoreTake(s_lock, portMAX_DELAY);
         ksb_set_lamp_count(&s_model, (uint8_t)(n ? n : 1));
         ksb_tick(&s_model, now_ms());
         for (int l = 0; l < KSB_MAX_LAMPS; l++) ksb_desired(&s_model, l, &want[l]);
         uint16_t gen = s_gen;
         bool pending = s_applied != gen;
+        force_lamps = s_force_lamps;
+        s_force_lamps = 0;
+        base_dirty = s_base_dirty;
+        if (base_dirty) {
+            s_base_dirty = false;
+            memcpy(base_save[0], s_model.base, sizeof s_model.base);
+            memcpy(base_save[1], s_model.last_on, sizeof s_model.last_on);
+        }
         map_dirty = s_model.map_dirty;
         if (map_dirty) {
             s_model.map_dirty = false;
             map_valid = s_model.lamp_src_valid;
             memcpy(map_ids, s_model.lamp_src, sizeof map_ids);
         }
+        rules_dirty = s_model.rules_dirty;
+        if (rules_dirty) {
+            memcpy(rules, s_model.rules, sizeof rules);
+            s_model.rules_dirty = false;
+        }
         xSemaphoreGive(s_lock);
         if (map_dirty) save_map(map_valid, map_ids);
+        if (rules_dirty) {
+            nvs_handle_t h;
+            if (nvs_open("ksb", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_blob(h, "rules1", rules, sizeof rules);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+        }
+        if (base_dirty) {
+            nvs_handle_t h;
+            if (nvs_open("ksb", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_blob(h, "base1", base_save, sizeof base_save);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+        }
 
         bool any_ready = false;
         outcome_t worst = OUT_NONE;
@@ -299,6 +380,7 @@ static void reconcile_task(void *arg)
                 s_verified[l] = false;
                 vTaskDelay(pdMS_TO_TICKS(SETTLE_MS));
             }
+            if (force_lamps & (1u << l)) s->valid = false;
             if (s->valid && ksb_scene_eq(&s->written, &want[l])) {
                 if (!pending && ks_ble_has_readback(l) && now_ms() - s->last_poll_ms >= POLL_MS) poll_lamp(l, p, s);
                 continue;
@@ -327,15 +409,16 @@ static void reconcile_task(void *arg)
         }
 
         if (pending || worst >= OUT_MISMATCH) {
-            uint8_t result = !any_ready             ? KSC_RESULT_NO_LAMP
-                           : worst == OUT_FAILED     ? KSC_RESULT_WRITE_FAILED
-                           : worst == OUT_MISMATCH   ? KSC_RESULT_MISMATCH
-                           : worst == OUT_UNSUPPORTED ? KSC_RESULT_UNSUPPORTED
-                           : worst == OUT_VERIFIED   ? KSC_RESULT_VERIFIED
-                                                     : KSC_RESULT_OK;
             xSemaphoreTake(s_lock, portMAX_DELAY);
             s_applied = gen;
-            s_result = result;
+            if (!any_ready || worst != OUT_NONE) {
+                s_result = !any_ready             ? KSC_RESULT_NO_LAMP
+                         : worst == OUT_FAILED     ? KSC_RESULT_WRITE_FAILED
+                         : worst == OUT_MISMATCH   ? KSC_RESULT_MISMATCH
+                         : worst == OUT_UNSUPPORTED ? KSC_RESULT_UNSUPPORTED
+                         : worst == OUT_VERIFIED   ? KSC_RESULT_VERIFIED
+                                                   : KSC_RESULT_OK;
+            }
             if (worst >= OUT_MISMATCH) s_error_until = now_ms() + 1500;
             xSemaphoreGive(s_lock);
         }
@@ -351,6 +434,20 @@ void ksb_bridge_start(const char *transport)
     ksb_init(&s_model);
     ks_ble_start(); // also initialises NVS
     load_map();
+    nvs_handle_t h;
+    if (nvs_open("ksb", NVS_READONLY, &h) == ESP_OK) {
+        size_t size = sizeof s_model.rules;
+        ksb_rule_t rules[4][2][KSA_SIG_COUNT];
+        if (nvs_get_blob(h, "rules1", rules, &size) == ESP_OK && size == sizeof rules)
+            memcpy(s_model.rules, rules, sizeof rules);
+        ksb_scene_t base_save[2][KSB_MAX_LAMPS];
+        size = sizeof base_save;
+        if (nvs_get_blob(h, "base1", base_save, &size) == ESP_OK && size == sizeof base_save) {
+            memcpy(s_model.base, base_save[0], sizeof s_model.base);
+            memcpy(s_model.last_on, base_save[1], sizeof s_model.last_on);
+        }
+        nvs_close(h);
+    }
     xTaskCreate(reconcile_task, "ksb_sync", 4096, NULL, 5, &s_task);
     ksb_ui_start();
 }

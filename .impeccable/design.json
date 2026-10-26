@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-25T15:02:11.7446704-07:00",
+  "title": "Design System: dongleLight",
+  "extensions": {
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [],
+    "native": {
+      "platform": "Windows 11 desktop",
+      "framework": "WinUI 3 / Windows App SDK",
+      "resourceDictionary": "XamlControlsResources",
+      "units": "XAML effective pixels; portable frontmatter px values represent source XAML values, not physical pixels.",
+      "backdrop": "MicaBackdrop",
+      "themeSelection": {
+        "target": "Root.RequestedTheme",
+        "values": ["Default", "Light", "Dark"]
+      },
+      "resourceBindings": {
+        "cardFill": "CardBackgroundFillColorDefaultBrush",
+        "secondaryText": "TextFillColorSecondaryBrush",
+        "titleIcon": "AccentTextFillColorPrimaryBrush",
+        "primaryButton": "AccentButtonStyle"
+      },
+      "typographyStyles": {
+        "pageTitle": "TitleTextBlockStyle",
+        "sectionTitle": "SubtitleTextBlockStyle",
+        "strongBody": "BodyStrongTextBlockStyle",
+        "body": "BodyTextBlockStyle",
+        "caption": "CaptionTextBlockStyle"
+      },
+      "layout": {
+        "initialWindow": { "width": 1160, "height": 820 },
+        "minimumWindow": { "width": 760, "height": 600 },
+        "titleBarHeight": 48,
+        "paneDisplayMode": "Auto",
+        "openPaneLength": 224,
+        "paneFooterVisibility": "Visible only while Navigation.IsPaneOpen",
+        "pagePadding": { "left": 36, "top": 20, "right": 36, "bottom": 32 },
+        "contentMaxWidth": 1000,
+        "horizontalScrolling": "Disabled",
+        "responsiveLimit": "No application-defined breakpoints or universal form-row reflow demonstrated."
+      },
+      "previewPolicy": "Native-only evidence. HTML/CSS component previews are intentionally omitted: browser approximations would invent control templates, resolved colors, focus states, and material behavior. Source XAML fragments below describe native composition; they are not shadow-DOM previews.",
+      "tokenPolicy": "Portable reused radius, spacing, and card tokens live only in DESIGN.md frontmatter. Theme brushes are bindings, not CSS colors. No synthetic palette, tonal ramps, numeric type metrics, shadow scale, or motion scale is asserted.",
+      "componentSource": {
+        "accent-button": {
+          "path": "desktop/DongleLight/MainWindow.xaml.cs",
+          "member": "Button",
+          "xaml": "<Button Style=\"{ThemeResource AccentButtonStyle}\" VerticalAlignment=\"Center\" />",
+          "note": "Declarative equivalent of the code-created native button; content and click handler supplied per action."
+        },
+        "default-button": {
+          "path": "desktop/DongleLight/MainWindow.xaml.cs",
+          "member": "Button",
+          "xaml": "<Button VerticalAlignment=\"Center\" />",
+          "note": "No application-defined hover, pressed, focus, padding, or corner override."
+        },
+        "text-field": {
+          "path": "desktop/DongleLight/MainWindow.xaml.cs",
+          "member": "AudioPage",
+          "xaml": "<TextBox Header=\"Devbox name\" MaxLength=\"8\" Description=\"Printable ASCII, unique across your devboxes.\" />",
+          "note": "Text is bound procedurally from settings.Name; validation is performed on save."
+        },
+        "settings-card": {
+          "path": "desktop/DongleLight/MainWindow.xaml.cs",
+          "member": "Surface",
+          "xaml": "<Border Background=\"{ThemeResource CardBackgroundFillColorDefaultBrush}\" />",
+          "note": "Composition fragment only. Corner radius and padding reference components.settings-card in DESIGN.md, avoiding duplicate token primitives."
+        },
+        "navigation": {
+          "path": "desktop/DongleLight/MainWindow.xaml",
+          "member": "Navigation",
+          "xaml": "<NavigationView PaneDisplayMode=\"Auto\" OpenPaneLength=\"224\" IsBackButtonVisible=\"Collapsed\" IsSettingsVisible=\"True\" />",
+          "note": "Menu items and footer are defined in MainWindow.xaml; MainWindow.xaml.cs collapses PaneIdentity when the pane closes."
+        },
+        "color-flyout": {
+          "path": "desktop/DongleLight/MainWindow.xaml.cs",
+          "member": "OverviewPage / BuildRuleRows",
+          "xaml": "<Button><Button.Flyout><Flyout><ColorPicker IsAlphaEnabled=\"False\" /></Flyout></Button.Flyout></Button>",
+          "note": "Declarative equivalent of native code-created composition; data color and action content are supplied at runtime."
+        },
+        "status-banner": {
+          "path": "desktop/DongleLight/MainWindow.xaml",
+          "member": "StatusBanner",
+          "xaml": "<InfoBar IsOpen=\"True\" IsClosable=\"False\" Severity=\"Informational\" Title=\"Set up your audio channel\" Message=\"Choose playback and microphone devices to connect this devbox.\" />",
+          "note": "ShowNotice, ShowError, and UpdateFreshness update native severity and text."
+        }
+      },
+      "behavior": {
+        "sharedSource": "Duplex dongle snapshots, not local defaults or playback completion.",
+        "localDiagnostics": "This devbox activity area is local only.",
+        "confirmation": "Shared rule edits remain pending until matching dongle values return.",
+        "freshness": "Cached snapshot older than 15 seconds produces a warning when freshness is updated; application timer interval is 15 seconds.",
+        "ownership": "Other channels' rule controls are disabled; save requires this devbox's selected channel and a snapshot. Live channel admission remains transport-owned.",
+        "preview": "A real event, not a visual simulation; working must be cleared, urgent events can also be acknowledged.",
+        "idle": "Clears the agent, not a color assignment.",
+        "consent": "Explicit hook installation and opt-in sign-in startup.",
+        "close": "Hides the window; notification-area process continues until Exit."
+      },
+      "provenance": {
+        "derivation": "Implemented source; runtime/test history below is supplied handoff evidence, not rerun during documentation.",
+        "primarySources": [
+          "desktop/DongleLight/MainWindow.xaml",
+          "desktop/DongleLight/MainWindow.xaml.cs",
+          "desktop/DongleLight/App.xaml",
+          "desktop/DongleLight/App.xaml.cs"
+        ],
+        "contextSources": [
+          "PRODUCT.md",
+          ".impeccable/config.json",
+          "desktop/README.md"
+        ],
+        "direction": "Maximum native Windows 11 WinUI/Mica, clean Windows Settings grammar, code-first.",
+        "seed": { "id": "96720d49", "status": "degraded; superseded by user-pinned native direction" },
+        "shippingRasterAssets": [],
+        "rollBoards": [],
+        "mockComps": [],
+        "generatedArtwork": [],
+        "savedScreenshots": [],
+        "externalComp": null,
+        "runtimeEvidence": [
+          "Debug and published RELEASE executables launched through Computer Use.",
+          "Accessibility-tree inspection confirmed the empty state and Audio channels.",
+          "Collapsed footer no longer wraps; source hides it when the pane closes.",
+          "Initial published PRI/XBF omission fixed by explicit post-Publish copy; actual published executable startup subsequently verified."
+        ],
+        "finishReview": {
+          "disposition": "recapture",
+          "reason": "Reviewer requires on-disk native screenshots; none were saved.",
+          "approved": false,
+          "visualComparisonPerformed": false,
+          "materialEvidence": "Earlier inspection exists only inline; no saved screenshot-based material or contrast certification."
+        },
+        "reportedValidation": [
+          "Full regression suite passed.",
+          "17 hook-configuration checks passed.",
+          "Firmware build passed."
+        ],
+        "notValidated": [
+          "Physical dongle and BLE lamp behavior",
+          "Actual RDP playback/microphone routing and fan-out",
+          "Live installed-agent hooks",
+          "Sign-in/reboot startup"
+        ],
+        "toolingLimitation": "Context loader does not recognize PRODUCT.md platform wording and treats it as web. Native source is authoritative; metadata was not changed.",
+        "notCanonized": "Isolated preview-button font-size override is not a second type scale; generic system tray icon is not a brand mark. Native icon controls are Windows grammar, not a custom glyph-icon convention."
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "Accent Button",
+      "kind": "button",
+      "description": "Native AccentButtonStyle for emphasized actions; native states retained. See extensions.native.componentSource.accent-button."
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "description": "Ordinary WinUI action button without a custom template. See extensions.native.componentSource.default-button."
+    },
+    {
+      "name": "Devbox Text Field",
+      "kind": "input",
+      "description": "Native TextBox with header, description, and an eight-character name limit. See extensions.native.componentSource.text-field."
+    },
+    {
+      "name": "Settings Card",
+      "kind": "card",
+      "refersTo": "settings-card",
+      "description": "Repeated theme-filled native Border using frontmatter card geometry. See extensions.native.componentSource.settings-card."
+    },
+    {
+      "name": "Auto Navigation",
+      "kind": "nav",
+      "description": "Native adaptive NavigationView, built-in Settings item, and footer hidden when collapsed. See extensions.native.componentSource.navigation."
+    },
+    {
+      "name": "Color Picker Flyout",
+      "kind": "custom",
+      "description": "Native ColorPicker in a Flyout; alpha disabled. See extensions.native.componentSource.color-flyout."
+    },
+    {
+      "name": "Status Banner",
+      "kind": "custom",
+      "description": "Persistent native InfoBar for connection, pending, stale, and error messages. See extensions.native.componentSource.status-banner."
+    }
+  ],
+  "narrative": {
+    "northStar": "A native instrument for the shared audio light bus",
+    "overview": "The shipped interface follows Windows 11 Settings grammar: a quiet navigation pane, Mica window material, system typography, theme-aware cards, and real WinUI controls. Its character is clean, restrained, and operational. Shared lights, Event rules, Audio channels, Integrations, and Settings occupy one consistent shell rather than separate visual worlds.\n\nThe implementation is code-first. The user-pinned native direction supersedes degraded seed `96720d49`; there are no roll boards, mock compositions, generated artwork, or shipping raster assets. Native color-picker flyouts are the characteristic interaction, not an illustrated identity.",
+    "keyCharacteristics": [
+      "Mica behind theme-aware native controls.",
+      "System text styles instead of a custom display face or numeric type ramp.",
+      "Consistent padded cards and a vertically scrolling settings layout.",
+      "Shared-state evidence kept distinct from local diagnostics.",
+      "Explicit connection, ownership, pending, and stale states."
+    ],
+    "rules": [
+      {
+        "name": "The State Is Data Rule",
+        "body": "Lamp and event colors describe the shared scene or editable event values; connection, confirmation, and ownership remain explicit text, not color-only claims.",
+        "section": "colors"
+      },
+      {
+        "name": "The System Type Rule",
+        "body": "Use the shipped WinUI text styles for hierarchy; do not replace the native ramp with a custom display treatment.",
+        "section": "typography"
+      },
+      {
+        "name": "The Native Depth Rule",
+        "body": "Keep window material, flyout elevation, focus, and control states under WinUI ownership; do not add an independent web-style shadow system.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Confirmation Rule",
+        "body": "A queued command or playback completion is not delivery evidence. Preserve pending rule-save language until matching dongle values return, and distinguish scene color from lamp readback.",
+        "section": "components"
+      },
+      {
+        "name": "The Shared Versus Local Rule",
+        "body": "Lamps, agents, channel ownership, and rules derive from dongle snapshots; the This devbox activity area is explicitly local diagnostics.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do retain native WinUI resources, controls, Mica, and Windows theme selection.",
+      "Do reuse the card inset, card radius, and page/section/row rhythm recorded in frontmatter.",
+      "Do keep shared snapshot state separate from local diagnostics and make stale or unconfirmed state explicit.",
+      "Do preserve ownership gating, opt-in hooks/startup, and the real-event meaning of preview.",
+      "Do label idle as clearing the agent rather than selecting a light color."
+    ],
+    "donts": [
+      "Don't treat command submission or playback completion as proof of delivery or lamp application.",
+      "Don't turn lamp RGB values or the manual picker's initial value into a brand palette.",
+      "Don't replace native control states with invented browser styling, custom shadows, or display typography.",
+      "Don't add invented artwork provenance, a mock-comp lineage, or finish approval to this code-first record.",
+      "Don't infer screenshot comparison, hardware/RDP validation, live-hook execution, or reboot validation from software tests."
+    ]
+  }
+}

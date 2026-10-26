@@ -28,6 +28,13 @@ void ksb_init(ksb_model_t *m)
     }
     m->n_lamps = 1;
     m->last_event_src = -1;
+    static const uint8_t colors[KSA_SIG_COUNT][3] = {
+        {0, 0, 0}, {64, 128, 255}, {0, 200, 96}, {255, 64, 64}, {255, 184, 48}
+    };
+    for (int ch = 0; ch < 4; ch++)
+        for (int p = 0; p < 2; p++)
+            for (int s = 0; s < KSA_SIG_COUNT; s++)
+                m->rules[ch][p][s] = (ksb_rule_t){colors[s][0], colors[s][1], colors[s][2], 75, 0};
 }
 
 void ksb_set_lamp_count(ksb_model_t *m, uint8_t n)
@@ -136,9 +143,14 @@ static void apply_signal(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
             }
         }
     }
-    size_t n = c->nargs - 2;
+    size_t offset = c->op == KSA_OP_STYLED ? 6 : 2;
+    s->styled = c->op == KSA_OP_STYLED;
+    if (s->styled) {
+        s->r = c->args[2]; s->g = c->args[3]; s->b = c->args[4]; s->bright = c->args[5];
+    }
+    size_t n = c->nargs - offset;
     if (n) {
-        memcpy(s->name, c->args + 2, n);
+        memcpy(s->name, c->args + offset, n);
         s->name[n] = 0;
     } else if (!s->name[0]) {
         static const char hex[] = "0123456789ABCDEF";
@@ -178,8 +190,27 @@ bool ksb_apply(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
         set_base(m, mask, (ksb_scene_t){.kind = KSB_SCENE_WHITE, .white = c->args[0]}, false);
         break;
     case KSA_OP_SIGNAL:
+    case KSA_OP_STYLED:
         apply_signal(m, c, now);
         return true;
+    case KSA_OP_RULE: {
+        ksb_rule_t *r = &m->rules[c->args[0]][c->args[1]][c->args[2]];
+        *r = (ksb_rule_t){c->args[3], c->args[4], c->args[5], c->args[6], c->args[7]};
+        m->rules_dirty = true;
+        return true;
+    }
+    case KSA_OP_HELLO: {
+        ksb_channel_t *ch = &m->channels[c->args[1]];
+        char name[KSA_SIGNAL_NAME_MAX + 1] = {0};
+        memcpy(name, c->args + 2, c->nargs - 2);
+        if (ch->used && now - ch->seen_ms < 60000 &&
+            (ch->id != c->args[0] || strcmp(ch->name, name))) return false;
+        ch->used = true;
+        ch->id = c->args[0];
+        memcpy(ch->name, name, sizeof name);
+        ch->seen_ms = now;
+        return true;
+    }
     case KSA_OP_ACK:
         ksb_ack(m, mask, now);
         return true;
@@ -206,6 +237,9 @@ void ksb_ack(ksb_model_t *m, uint8_t mask, uint32_t now)
 
 void ksb_tick(ksb_model_t *m, uint32_t now)
 {
+    for (int ch = 0; ch < 4; ch++)
+        if (m->channels[ch].used && now - m->channels[ch].seen_ms >= 60000)
+            m->channels[ch].used = false;
     for (int i = 0; i < KSB_MAX_SOURCES; i++) {
         ksb_source_t *s = &m->src[i];
         if (!s->used) continue;
@@ -223,7 +257,7 @@ int ksb_top_source_for(const ksb_model_t *m, int lamp)
     int top = -1;
     for (int i = 0; i < KSB_MAX_SOURCES; i++) {
         const ksb_source_t *s = &m->src[i];
-        if (!s->used || s->acked || s->state < KSA_SIG_DONE) continue;
+        if (!s->used || s->acked || s->state < (s->styled ? KSA_SIG_WORKING : KSA_SIG_DONE)) continue;
         if (lamp >= 0) {
             int sl = ksb_source_lamp(m, i);
             if (sl >= 0 && sl != lamp) continue;
@@ -242,6 +276,11 @@ void ksb_desired(const ksb_model_t *m, int lamp, ksb_scene_t *out)
     int top = ksb_top_source_for(m, lamp);
     if (top < 0) {
         *out = m->base[lamp];
+        return;
+    }
+    if (m->src[top].styled) {
+        const ksb_source_t *s = &m->src[top];
+        *out = rgb_scene(s->r, s->g, s->b, s->bright);
         return;
     }
     switch (m->src[top].state) {

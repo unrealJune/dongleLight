@@ -22,6 +22,21 @@ static bool args_ok(uint8_t op, const uint8_t *args, size_t n)
     case KSA_OP_EFFECT: return n == 3 || n == 4;
     case KSA_OP_WHITE:  return n == 1 || n == 2;
     case KSA_OP_ACK:    return n == 0 || n == 1;
+    case KSA_OP_CLAIM:  return n == 0;
+    case KSA_OP_RULE:
+        return n == 8 && args[0] < 4 && args[1] < 2 && args[2] < KSA_SIG_COUNT &&
+               args[6] <= 100 && args[7] <= KSA_MAX_LAMPS;
+    case KSA_OP_HELLO:
+        if (n < 3 || n > 10 || args[1] >= 4) return false;
+        for (size_t i = 2; i < n; i++)
+            if (args[i] < 0x20 || args[i] > 0x7E) return false;
+        return true;
+    case KSA_OP_STYLED:
+        if (n < 6 || n > 6 + KSA_SIGNAL_NAME_MAX || args[5] > 100) return false;
+        if ((args[1] & 15) >= KSA_SIG_COUNT || (args[1] >> 4) > KSA_MAX_LAMPS) return false;
+        for (size_t i = 6; i < n; i++)
+            if (args[i] < 0x20 || args[i] > 0x7E) return false;
+        return true;
     case KSA_OP_SIGNAL:
         if (n < 2 || n > 2 + KSA_SIGNAL_NAME_MAX) return false;
         if ((args[1] & 0x0F) >= KSA_SIG_COUNT || (args[1] >> 4) > KSA_MAX_LAMPS) return false;

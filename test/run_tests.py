@@ -5,6 +5,7 @@ Scenarios approximate what RDP audio redirection might do: lossy codecs at low
 bitrates, gain changes, noise, a notification chime landing mid-frame, and a
 small clock/pitch error. Needs gcc, ffmpeg (with libopus/aac/mp3), numpy.
 """
+import argparse
 import os
 import subprocess
 import sys
@@ -20,20 +21,23 @@ import ks as ks_tx  # noqa: E402
 
 BUILD = tempfile.mkdtemp(prefix="ksa_build_")
 RATE = 48000
+CC = [sys.executable, "-m", "ziglang", "cc"] if os.name == "nt" else ["gcc"]
 
 
-def build():
-    srcs = [os.path.join(CORE, f) for f in ("ksa_dtmf_rx.c", "ksa_frame.c", "ksa_protocol.c", "ksb_logic.c", "ksc_card.c")]
+def executable(name):
+    return os.path.join(BUILD, name + (".exe" if os.name == "nt" else ""))
+
+
+def build(duplex_only=False):
+    srcs = [os.path.join(CORE, f) for f in ("ksa_dtmf_rx.c", "ksa_frame.c", "ksa_protocol.c", "ksb_logic.c", "ksc_card.c", "ksbus.c")]
     inc = ["-I", os.path.join(CORE, "include")]
     flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-std=c11"]
-    dec = os.path.join(BUILD, "host_decode")
-    proto = os.path.join(BUILD, "test_protocol")
-    subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, "host_decode.c"), *srcs, "-lm", "-o", dec], check=True)
-    subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, "test_protocol.c"), *srcs, "-lm", "-o", proto], check=True)
-    for name in ("test_logic", "card_harness"):
-        subprocess.run(["gcc", *flags, *inc, os.path.join(HERE, name + ".c"), *srcs, "-lm",
-                        "-o", os.path.join(BUILD, name)], check=True)
-    return dec, proto
+    names = ("bus_harness",) if duplex_only else (
+        "host_decode", "test_protocol", "test_logic", "card_harness", "bus_harness")
+    for name in names:
+        subprocess.run([*CC, *flags, *inc, os.path.join(HERE, name + ".c"), *srcs, "-lm",
+                        "-o", executable(name)], check=True)
+    return executable("host_decode"), executable("test_protocol")
 
 
 def card_tests():
@@ -46,7 +50,7 @@ def card_tests():
         ("signal needs-you", K.apdu_submit(K.build_body(K.OP_SIGNAL, K.signal_args("needs-you", "devbox-1"))), "00019000"),
         ("rgb", K.apdu_submit(K.build_body(K.OP_RGB, [255, 136, 0, 80])), "00029000"),
         ("signal working", K.apdu_submit(K.build_body(K.OP_SIGNAL, K.signal_args("working", "train"))), "00039000"),
-        ("bad op", K.apdu_submit(bytes([0x59, 1])), "6a80"),
+        ("bad op", K.apdu_submit(bytes([0x5E, 1])), "6a80"),
         ("Windows probes PIV", sel_piv, "6a82"),
         ("submit after foreign SELECT", K.apdu_submit(K.build_body(K.OP_ACK, [])), "6985"),
         ("reSELECT", K.apdu_select(), "019000"),
@@ -59,7 +63,7 @@ def card_tests():
         ("escape unsupported", "6b000000000000000000"),
     ]
     inp = "".join(a.hex() + "\n" for _, a, _ in script) + "".join("!" + m + "\n" for _, m in raw)
-    exe = os.path.join(BUILD, "card_harness")
+    exe = executable("card_harness")
     out = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split()
     fails = 0
     for (name, _, want), got in zip(script, out):
@@ -153,17 +157,29 @@ SCENARIOS = [
 
 
 def main():
-    dec, proto = build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--duplex-only", action="store_true", help="Build and run only the simulated duplex integration suite.")
+    args = parser.parse_args()
+    dec, proto = build(args.duplex_only)
+    if args.duplex_only:
+        return subprocess.run([sys.executable, os.path.join(HERE, "test_duplex_integration.py")],
+                              env=dict(os.environ, KSBUS_HARNESS=executable("bus_harness"))).returncode
     r = subprocess.run([proto], capture_output=True, text=True)
     print(r.stdout.strip().splitlines()[-1])
     failures = 0 if r.returncode == 0 else 1
     if r.returncode:
         print(r.stdout)
 
-    r = subprocess.run([os.path.join(BUILD, "test_logic")], capture_output=True, text=True)
+    r = subprocess.run([executable("test_logic")], capture_output=True, text=True)
     print(r.stdout.strip().splitlines()[-1])
     failures += r.returncode != 0
     failures += card_tests()
+    bus_tests = subprocess.run([sys.executable, os.path.join(HERE, "test_audio_bus.py")],
+                              env=dict(os.environ, KSBUS_HARNESS=executable("bus_harness")))
+    failures += bus_tests.returncode != 0
+    integration = subprocess.run([sys.executable, os.path.join(HERE, "test_duplex_integration.py")],
+                                env=dict(os.environ, KSBUS_HARNESS=executable("bus_harness")))
+    failures += integration.returncode != 0
 
     rng = np.random.default_rng(1)
     for sname, sc in SCENARIOS:

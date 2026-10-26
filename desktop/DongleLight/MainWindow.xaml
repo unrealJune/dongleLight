@@ -1,0 +1,50 @@
+<Window
+    x:Class="DongleLight.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
+    <!-- THESIS: A native instrument for the shared audio light bus, not a web dashboard.
+         OWN-WORLD: System Mica, Segoe UI Variable, theme brushes, real WinUI controls.
+         STORY: See the shared lamps; tune events; establish a duplex RDP channel.
+         FIRST VIEWPORT: Quiet left navigation, shared-state heading, live lamp colors,
+         channel ownership and one acknowledge action. Native color flyouts are the signature interaction.
+         FORM: User-pinned Windows Settings grammar overrides seed 96720d49 (degraded).
+         FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid x:Name="TitleBar" Background="Transparent">
+            <StackPanel Orientation="Horizontal" Spacing="12" Margin="20,0,160,0" VerticalAlignment="Center">
+                <FontIcon Glyph="&#xE781;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                <TextBlock Text="dongleLight" Style="{ThemeResource CaptionTextBlockStyle}"/>
+            </StackPanel>
+        </Grid>
+        <NavigationView x:Name="Navigation" Grid.Row="1" PaneDisplayMode="Auto"
+                        IsBackButtonVisible="Collapsed" OpenPaneLength="224"
+                        IsSettingsVisible="True" SelectionChanged="Navigate">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="Shared lights" Tag="overview" Icon="Home" IsSelected="True"/>
+                <NavigationViewItem Content="Event rules" Tag="rules"><NavigationViewItem.Icon><FontIcon Glyph="&#xE790;"/></NavigationViewItem.Icon></NavigationViewItem>
+                <NavigationViewItem Content="Audio channels" Tag="audio" Icon="Volume"/>
+                <NavigationViewItem Content="Integrations" Tag="integrations"><NavigationViewItem.Icon><FontIcon Glyph="&#xE8D4;"/></NavigationViewItem.Icon></NavigationViewItem>
+            </NavigationView.MenuItems>
+            <NavigationView.PaneFooter>
+                <StackPanel x:Name="PaneIdentity" Spacing="4" Margin="16,0,12,20">
+                    <TextBlock x:Name="MachineLabel" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="Audio-only · RDP bridge" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+            </NavigationView.PaneFooter>
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="36,20,36,32">
+                <StackPanel Spacing="24" MaxWidth="1000" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="8">
+                        <TextBlock x:Name="PageTitle" Text="Shared lights" Style="{ThemeResource TitleTextBlockStyle}"/>
+                        <TextBlock x:Name="PageSubtitle" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <InfoBar x:Name="StatusBanner" IsOpen="True" IsClosable="False" Severity="Informational"
+                             Title="Set up your audio channel"
+                             Message="Choose playback and microphone devices to connect this devbox."/>
+                    <StackPanel x:Name="PageContent" Spacing="24"/>
+                </StackPanel>
+            </ScrollViewer>
+        </NavigationView>
+    </Grid>
+</Window>

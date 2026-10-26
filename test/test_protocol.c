@@ -28,6 +28,40 @@ int main(void)
     if (!ext || ext->fmt != KS_FMT_EXTENDED || ext->write_chr[0] != 0xAFD1) { puts("FAIL KS03~ profile"); fails++; }
     if (ks_profile_for_name("ELK-BLEDOM")) { puts("FAIL non-KS matched"); fails++; }
 
+    // Captured QHM-S1FE advertisement: a valid name followed by zero padding.
+    const uint8_t qhm_adv[31] = {2, 1, 6, 9, 9, 'Q', 'H', 'M', '-', 'S', '1', 'F', 'E'};
+    char name[24];
+    if (!ks_adv_name(qhm_adv, sizeof qhm_adv, name, sizeof name) || strcmp(name, "QHM-S1FE"))
+        { puts("FAIL padded QHM advertisement"); fails++; }
+    const ks_profile_t *qhm = ks_profile_for_name(name);
+    if (!qhm || qhm->fmt != KS_FMT_TRIONES)
+        { puts("FAIL advertised QHM profile"); fails++; }
+    if (!ks_adv_name(qhm_adv, 13, name, sizeof name) || strcmp(name, "QHM-S1FE"))
+        { puts("FAIL unpadded advertisement"); fails++; }
+    for (size_t len = 0; len <= sizeof qhm_adv; len++) {
+        bool parsed = ks_adv_name(qhm_adv, len, name, sizeof name);
+        if (parsed != (len >= 13) || (parsed && strcmp(name, "QHM-S1FE")))
+            { puts("FAIL advertisement length boundary"); fails++; }
+    }
+    const uint8_t names[] = {9, 9, 'Q', 'H', 'M', '-', 'S', '1', 'F', 'E', 4, 8, 'Q', 'H', 'M'};
+    if (!ks_adv_name(names, sizeof names, name, sizeof name) || strcmp(name, "QHM-S1FE"))
+        { puts("FAIL complete name preferred"); fails++; }
+    if (!ks_adv_name(names + 10, 5, name, sizeof name) || strcmp(name, "QHM"))
+        { puts("FAIL shortened advertisement name"); fails++; }
+    if (ks_adv_name(qhm_adv, 12, name, sizeof name) || name[0])
+        { puts("FAIL truncated advertisement rejected"); fails++; }
+    const uint8_t bad_tail[] = {4, 8, 'Q', 'H', 'M', 3, 1};
+    if (ks_adv_name(bad_tail, sizeof bad_tail, name, sizeof name) || name[0])
+        { puts("FAIL truncated field after name rejected"); fails++; }
+    if (ks_adv_name(NULL, 0, name, sizeof name) || ks_adv_name(qhm_adv, 3, name, sizeof name))
+        { puts("FAIL absent advertisement name"); fails++; }
+    if (ks_adv_name(qhm_adv, sizeof qhm_adv, name, 1) || name[0] ||
+        ks_adv_name(qhm_adv, sizeof qhm_adv, NULL, sizeof name) ||
+        ks_adv_name(NULL, 1, name, sizeof name))
+        { puts("FAIL advertisement output bounds"); fails++; }
+    if (!ks_adv_name(qhm_adv, sizeof qhm_adv, name, 5) || strcmp(name, "QHM-"))
+        { puts("FAIL advertisement name truncation"); fails++; }
+
     expect("on", out, ks_pkt_power(ext, true, out), "5BF001B5");
     expect("off", out, ks_pkt_power(ext, false, out), "5B0F01B5");
     expect("standard red", out, ks_pkt_rgb(std, 255, 0, 0, 100, out), "7E070503FF000000EF");
@@ -71,6 +105,13 @@ int main(void)
     if (ksa_frame_parse(frame, 6, &cmd) || cmd.op != 2 || cmd.args[1] != 0x88) { puts("FAIL parse"); fails++; }
     frame[2] ^= 1;
     if (ksa_frame_parse(frame, 6, &cmd) != -2) { puts("FAIL crc reject"); fails++; }
+    uint8_t claim[] = {0x5A, 0};
+    claim[1] = ksa_crc8(claim, 1);
+    if (ksa_frame_parse(claim, sizeof claim, &cmd) || cmd.op != KSA_OP_CLAIM || cmd.nargs)
+        { puts("FAIL parse claim"); fails++; }
+    const uint8_t bad_claim[] = {0x5A, 1};
+    if (ksa_cmd_from_body(bad_claim, sizeof bad_claim, &cmd) != -4)
+        { puts("FAIL claim arguments rejected"); fails++; }
 
     printf(fails ? "%d FAILED\n" : "all protocol tests passed\n", fails);
     return fails != 0;
