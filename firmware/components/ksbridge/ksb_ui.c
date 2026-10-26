@@ -1,9 +1,10 @@
-// Screen (ST7735, landscape 160x80), APA102 LED and the BOOT button.
+// Screen (ST7735, 80x160 portrait or 160x80 landscape), APA102 LED and BOOT button.
 // Panel setup follows LILYGO's T-Dongle-S3 lcd example: BGR, inverted colors,
-// byte-swapped RGB565 over SPI; landscape = swap_xy + gap (1, 26), portrait =
-// no swap + gap (26, 1), both with mirror_y. The 0.96" 80x160 glass sits at
-// offset (26, 1) in the ST7735's 132x162 RAM, symmetric on both sides, so a
-// 180-degree flip (toggle both mirror bits) keeps the same gap.
+// byte-swapped RGB565 over SPI. In landscape, swap_xy (MV=1) swaps axes so one
+// mirror bit (MX!=MY) yields a proper 90/270-degree rotation with gap (1, 26).
+// In portrait, swap_xy is off (MV=0), so MX must equal MY: (false, false) puts
+// y=0 at the USB plug end without mirroring; (true, true) rotates 180 degrees.
+// The 0.96" 80x160 glass sits at offset (26, 1) in the ST7735's 132x162 RAM.
 #include <string.h>
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
@@ -68,14 +69,19 @@ static bool lcd_init(void)
 #if CONFIG_KSA_LCD_PORTRAIT
     esp_lcd_panel_set_gap(s_panel, 26, 1);
     esp_lcd_panel_swap_xy(s_panel, false);
+#if CONFIG_KSA_LCD_FLIP
+    esp_lcd_panel_mirror(s_panel, true, true);
+#else
+    esp_lcd_panel_mirror(s_panel, false, false);
+#endif
 #else
     esp_lcd_panel_set_gap(s_panel, 1, 26);
     esp_lcd_panel_swap_xy(s_panel, true);
-#endif
 #if CONFIG_KSA_LCD_FLIP
     esp_lcd_panel_mirror(s_panel, true, false);
 #else
     esp_lcd_panel_mirror(s_panel, false, true);
+#endif
 #endif
     esp_lcd_panel_disp_on_off(s_panel, true);
 

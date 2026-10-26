@@ -217,7 +217,8 @@ bool ksb_apply(ksb_model_t *m, const ksa_cmd_t *c, uint32_t now)
     default:
         return false;
     }
-    event(m, KSB_EV_MANUAL, -1, now);
+    int single = mask == 1 ? 0 : mask == 2 ? 1 : mask == 4 ? 2 : mask == 8 ? 3 : -1;
+    event(m, KSB_EV_MANUAL, single, now);
     return true;
 }
 
@@ -434,7 +435,7 @@ void ksb_adopt(ksb_model_t *m, const ks_profile_t *p, int lamp, const ks_lamp_st
     if (ksb_top_source_for(m, lamp) >= 0) ksb_ack(m, (uint8_t)(1u << lamp), now);
     m->base[lamp] = s;
     if (s.kind != KSB_SCENE_OFF) m->last_on[lamp] = s;
-    event(m, KSB_EV_MANUAL, -1, now);
+    event(m, KSB_EV_MANUAL, lamp, now);
     ksb_desired(m, lamp, adopted);
     ksb_expect(p, adopted, e);
     if (e->has_pattern && triones_effect(st->pattern)) e->pattern = st->pattern;

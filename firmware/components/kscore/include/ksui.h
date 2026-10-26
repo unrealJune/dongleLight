@@ -1,5 +1,6 @@
-// 160x80 status screen: "Lumi", a little lamp spirit that glows in whatever
-// color the strip is showing, plus status text and one badge per devbox.
+// 160x80 / 80x160 status screen: full-bleed "Lumi" — the entire screen is her
+// glowing face in whatever color the strip is showing, and flashes full-screen
+// with a bold high-contrast icon on any update so it reads from across a room.
 // Portable C so it renders identically on the host (see test/ui_preview.c).
 #pragma once
 #include <stdint.h>
@@ -34,11 +35,12 @@ typedef struct {
     uint8_t claim_slot;         // lamp index the claim is about
     uint32_t claim_ms;          // when the claim state last changed
     uint32_t button_held_ms;    // BOOT held this long (0 = not held)
-    uint8_t portrait;           // 1: 80 wide x 160 tall, top = USB plug end
+    uint8_t portrait;           // 1: 80 wide x 160 tall
 } ksui_view_t;
 
 #define KSUI_HOLD_CLAIM_MS 3000
 #define KSUI_HOLD_FORGET_MS 10000
+#define KSUI_FLASH_MS 2600
 
 // Render into fb (row-major, native-endian RGB565): 160x80 in landscape,
 // 80x160 in portrait. Same pixel count either way.

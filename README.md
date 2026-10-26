@@ -159,11 +159,11 @@ Each strip is its own Bluetooth device, so they're addressed separately. Pixels
 
 | Claude Code event | signal | strip | screen |
 | --- | --- | --- | --- |
-| `Notification` (`permission_prompt`, `idle_prompt`) | needs-you | pulsing amber (yellow breathing on KS03~) | amber border, `!`, name in amber |
-| `UserPromptSubmit` | working | unchanged | blue badge |
-| `Stop` | done | green, clears after 2 min | green badge |
-| `StopFailure` | error | red until acked | red badge, frown |
-| `SessionEnd` | idle | badge removed | |
+| `Notification` (`permission_prompt`, `idle_prompt`) | needs-you | pulsing amber (yellow breathing on KS03~) | full-screen amber `!` flash, then pulsing amber Lumi |
+| `UserPromptSubmit` | working | unchanged | full-screen blue activity flash, blue bottom block |
+| `Stop` | done | green, clears after 2 min | full-screen green `✓` flash, green Lumi + bottom block |
+| `StopFailure` | error | red until acked | full-screen red `✕` flash, then pulsing red frowning Lumi |
+| `SessionEnd` | idle | block removed | brief cyan clear flash |
 
 The most urgent unacknowledged signal wins. It overlays whatever color you set
 by hand, and the strip returns to your color when everything is acked or clear.
@@ -174,24 +174,22 @@ are evicted first.
 ## Lumi
 
 **Orientation:** the default is portrait, 80 × 160, with the dongle standing and the
-USB plug pointing away from you, so the top of the screen is the plug end. Lumi
-and the lamp swatches sit on top, with the "who needs you" line and the agent
-list below. If Lumi comes up upside down on your unit, turn on *Rotate the
-screen 180 degrees* (`CONFIG_KSA_LCD_FLIP`). Landscape is still available
-(`CONFIG_KSA_LCD_LANDSCAPE`). Real size is about 10.9 × 21.8 mm, so names
-are about 1 mm tall; Lumi's color, the amber border and the `!` carry the urgent stuff.
+USB plug pointing away from you, so the top of the screen is the plug end. If
+Lumi comes up upside down on your unit, turn on *Rotate the screen 180 degrees*
+(`CONFIG_KSA_LCD_FLIP`). Landscape is still available (`CONFIG_KSA_LCD_LANDSCAPE`).
+
+**Full-bleed screen:** because the 0.96″ panel is only 10.9 × 21.8 mm and often
+viewed off-axis, there is no tiny text. Every update (signal, color change, ack,
+or claim) flashes the entire screen in that event's color with a giant symbol
+(`!`, `✓`, `✕`, `♥`, `✦`) and lamp number badge (`1`–`4`). Otherwise, Lumi fills
+the entire screen edge-to-edge in whatever color the strip is showing, with
+chunky lamp bars along the top edge and active-agent color blocks along the bottom.
 
 **Emulator:** `tools/lumi-sim/build.sh` compiles the real model and screen
 renderer (`firmware/components/kscore`) to WebAssembly with zig
 (`pip install ziglang`) and writes `tools/lumi-sim/lumi-sim.html`, a playground
-with both devboxes, a BOOT button you can tap or hold, and the strips.
-
-Lumi glows whatever the strip is showing. She bounces with sparkles when a
-command lands and wobbles with a `!` when someone needs you. She frowns at
-errors or garbled input, gets a heart when you ack, sleeps (`z`) when the lamp
-is off, and looks around while searching. The antenna is blue while searching,
-green when linked, and amber or red for alerts. The right side lists the agents,
-most urgent first.
+with both devboxes, a BOOT button you can tap or hold, viewing-angle simulation,
+and the strips.
 
 ## Readback (Triones strips)
 

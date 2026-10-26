@@ -5,17 +5,26 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CORE = os.path.join(os.path.dirname(HERE), "firmware", "components", "kscore")
+ROOT = os.path.dirname(HERE)
+CORE = os.path.join(ROOT, "firmware", "components", "kscore")
 W, H, SCALE = 160, 80, 4
-SCENES = ["searching (audio)", "linked, orange", "lamp off: asleep", "devbox-1 needs you",
-          "error + new signal", "acked: heart", "purple fx, 6 agents", "2 lamps, 2 devboxes",
-          "devbox-2 needs you (lamp 2)", "long-press: claiming", "claimed lamp 2", "fresh: nothing claimed"]
+SCENES = ["searching (Lumi)", "linked, orange (Lumi)", "lamp off: asleep", "FLASH: needs you (!)",
+          "FLASH: error (X)", "FLASH: acked (heart)", "FLASH: done (check)", "FLASH: working",
+          "needs you (Lumi steady)", "FLASH: claiming (?)", "FLASH: claimed lamp 2", "FLASH: color change (*)"]
+
+
+def cc_cmd():
+    if os.name == "nt":
+        venv_py = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+        py = venv_py if os.path.exists(venv_py) else sys.executable
+        return [py, "-m", "ziglang", "cc"]
+    return ["gcc"]
 
 
 def build():
-    out = os.path.join(tempfile.mkdtemp(), "ui_preview")
+    out = os.path.join(tempfile.mkdtemp(), "ui_preview" + (".exe" if os.name == "nt" else ""))
     srcs = [os.path.join(CORE, f) for f in ("ksui_render.c", "ksui_font.c", "ksb_logic.c", "ksa_frame.c", "ksa_protocol.c")]
-    subprocess.run(["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", "-I", os.path.join(CORE, "include"),
+    subprocess.run([*cc_cmd(), "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", "-I", os.path.join(CORE, "include"),
                     os.path.join(HERE, "ui_preview.c"), *srcs, "-lm", "-o", out], check=True)
     return out
 
@@ -46,9 +55,9 @@ def main(out_dir):
         sheet.paste(t, ((i % cols) * (W * SCALE + 12), (i // cols) * (H * SCALE + 40)))
     sheet.save(os.path.join(out_dir, "screen_states.png"))
 
-    # GIF: a little story, 2.4 s per scene at 20 fps
+    # GIF: a little story showing full-screen update flashes settling into Big Lumi
     gif = []
-    for sc in (7, 8, 5, 9, 10, 2):
+    for sc in (1, 3, 8, 5, 6, 2):
         for f in frames(exe, sc, 0, 48, 50):
             gif.append(Image.fromarray(f).resize((W * 3, H * 3), Image.NEAREST))
     gif[0].save(os.path.join(out_dir, "lumi.gif"), save_all=True, append_images=gif[1:], duration=50, loop=0)
@@ -70,7 +79,7 @@ def main(out_dir):
         sheet.paste(t, ((i % cols) * tw, (i // cols) * th))
     sheet.save(os.path.join(out_dir, "screen_states_portrait.png"))
     gif = []
-    for sc in (7, 8, 5, 9, 10, 2):
+    for sc in (1, 3, 8, 5, 6, 2):
         for f in frames(exe, sc, 0, 48, 50, portrait=True):
             gif.append(Image.fromarray(f).resize((H * PS, W * PS), Image.NEAREST))
     gif[0].save(os.path.join(out_dir, "lumi_portrait.gif"), save_all=True, append_images=gif[1:], duration=50, loop=0)

@@ -12,13 +12,16 @@ extern const uint8_t ksui_font5x7[95][5];
 
 typedef struct { uint8_t r, g, b; } rgb_t;
 
-static const rgb_t BG = {14, 17, 30};
-static const rgb_t DIM = {118, 124, 150};
-static const rgb_t TEXT = {232, 234, 245};
-static const rgb_t RULE = {40, 46, 68};
+static const rgb_t BG    = {14, 17, 30};
 static const rgb_t AMBER = {255, 176, 0};
+static const rgb_t RED   = {255, 56, 64};
+static const rgb_t GREEN = {40, 230, 105};
+static const rgb_t BLUE  = {56, 140, 255};
+static const rgb_t PINK  = {255, 95, 150};
+static const rgb_t CYAN  = {65, 195, 220};
+
 static const rgb_t STATE_COLORS[KSA_SIG_COUNT] = {
-    {110, 110, 130}, {90, 150, 255}, {80, 230, 120}, {255, 70, 70}, {255, 176, 0},
+    {110, 110, 130}, {56, 140, 255}, {40, 230, 105}, {255, 56, 64}, {255, 176, 0},
 };
 
 static uint16_t *s_fb;
@@ -40,6 +43,24 @@ static rgb_t mix(rgb_t a, rgb_t b, float t)
     return c;
 }
 
+static rgb_t boost_vivid(rgb_t c)
+{
+    uint8_t mx = c.r > c.g ? (c.r > c.b ? c.r : c.b) : (c.g > c.b ? c.g : c.b);
+    if (mx < 8) return (rgb_t){70, 80, 115};
+    float k = mx < 220 ? 220.0f / (float)mx : 1.0f;
+    return (rgb_t){
+        (uint8_t)fminf(255.0f, c.r * k),
+        (uint8_t)fminf(255.0f, c.g * k),
+        (uint8_t)fminf(255.0f, c.b * k),
+    };
+}
+
+static rgb_t contrast_ink(rgb_t bg)
+{
+    int lum = (bg.r * 3 + bg.g * 6 + bg.b) / 10;
+    return lum > 115 ? (rgb_t){16, 18, 28} : (rgb_t){250, 252, 255};
+}
+
 static void px(int x, int y, rgb_t c)
 {
     if (x >= 0 && x < s_w && y >= 0 && y < s_h) s_fb[y * s_w + x] = pack(c);
@@ -47,7 +68,8 @@ static void px(int x, int y, rgb_t c)
 
 static void px_blend(int x, int y, rgb_t c, float a)
 {
-    if (x < 0 || x >= s_w || y < 0 || y >= s_h) return;
+    if (x < 0 || x >= s_w || y < 0 || y >= s_h || a <= 0.0f) return;
+    if (a >= 1.0f) { s_fb[y * s_w + x] = pack(c); return; }
     s_fb[y * s_w + x] = pack(mix(unpack(s_fb[y * s_w + x]), c, a));
 }
 
@@ -55,6 +77,16 @@ static void rect(int x, int y, int w, int h, rgb_t c)
 {
     for (int j = y; j < y + h; j++)
         for (int i = x; i < x + w; i++) px(i, j, c);
+}
+
+static void border(int thick, rgb_t c, float alpha)
+{
+    for (int y = 0; y < s_h; y++) {
+        for (int x = 0; x < s_w; x++) {
+            if (x < thick || x >= s_w - thick || y < thick || y >= s_h - thick)
+                px_blend(x, y, c, alpha);
+        }
+    }
 }
 
 // Anti-aliased filled disc; alpha scales the whole disc.
@@ -69,69 +101,73 @@ static void disc(float cx, float cy, float r, rgb_t c, float alpha)
     }
 }
 
-static void ellipse(float cx, float cy, float rx, float ry, rgb_t c)
+// Anti-aliased ring of radius r and stroke thickness `thick`.
+static void ring(float cx, float cy, float r, float thick, rgb_t c, float alpha)
 {
-    for (int y = (int)(cy - ry - 1); y <= (int)(cy + ry + 1); y++) {
-        for (int x = (int)(cx - rx - 1); x <= (int)(cx + rx + 1); x++) {
-            float dx = (x + 0.5f - cx) / rx, dy = (y + 0.5f - cy) / ry;
-            if (dx * dx + dy * dy <= 1.0f) px(x, y, c);
+    float hw = thick * 0.5f;
+    float outer = r + hw + 1.0f;
+    for (int y = (int)(cy - outer); y <= (int)(cy + outer); y++) {
+        for (int x = (int)(cx - outer); x <= (int)(cx + outer); x++) {
+            float d = sqrtf((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy));
+            float cov = hw + 0.5f - fabsf(d - r);
+            if (cov > 0) px_blend(x, y, c, alpha * (cov > 1 ? 1 : cov));
         }
     }
 }
 
-static int text(int x, int y, const char *s, rgb_t c)
+// Anti-aliased thick line segment with round caps of radius r.
+static void capsule(float x0, float y0, float x1, float y1, float r, rgb_t c, float alpha)
 {
-    for (; *s; s++, x += 6) {
+    float minx = (x0 < x1 ? x0 : x1) - r - 1.0f;
+    float maxx = (x0 > x1 ? x0 : x1) + r + 1.0f;
+    float miny = (y0 < y1 ? y0 : y1) - r - 1.0f;
+    float maxy = (y0 > y1 ? y0 : y1) + r + 1.0f;
+    float dx = x1 - x0, dy = y1 - y0;
+    float l2 = dx * dx + dy * dy;
+    for (int y = (int)miny; y <= (int)maxy; y++) {
+        for (int x = (int)minx; x <= (int)maxx; x++) {
+            float px_x = x + 0.5f, px_y = y + 0.5f;
+            float t = l2 > 0.001f ? ((px_x - x0) * dx + (px_y - y0) * dy) / l2 : 0.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            float qx = x0 + t * dx, qy = y0 + t * dy;
+            float d = sqrtf((px_x - qx) * (px_x - qx) + (px_y - qy) * (px_y - qy));
+            float cov = r + 0.5f - d;
+            if (cov > 0) px_blend(x, y, c, alpha * (cov > 1 ? 1 : cov));
+        }
+    }
+}
+
+static void ellipse(float cx, float cy, float rx, float ry, rgb_t c)
+{
+    for (int y = (int)(cy - ry - 2); y <= (int)(cy + ry + 2); y++) {
+        for (int x = (int)(cx - rx - 2); x <= (int)(cx + rx + 2); x++) {
+            float dx = (x + 0.5f - cx) / rx, dy = (y + 0.5f - cy) / ry;
+            float d = sqrtf(dx * dx + dy * dy);
+            float r_min = rx < ry ? rx : ry;
+            float cov = (1.0f - d) * r_min + 0.5f;
+            if (cov > 0.0f) px_blend(x, y, c, cov > 1.0f ? 1.0f : cov);
+        }
+    }
+}
+
+static int text_scale(int x, int y, const char *s, int scale, rgb_t c)
+{
+    for (; *s; s++, x += 6 * scale) {
         unsigned ch = (unsigned char)*s;
         if (ch < 0x20 || ch > 0x7E) ch = '?';
         for (int col = 0; col < 5; col++) {
             uint8_t bits = ksui_font5x7[ch - 0x20][col];
             for (int row = 0; row < 8; row++)
-                if (bits & (1u << row)) px(x + col, y + row, c);
+                if (bits & (1u << row)) rect(x + col * scale, y + row * scale, scale, scale, c);
         }
     }
     return x;
 }
 
-static void text_clip(int x, int y, const char *s, int max_chars, rgb_t c)
-{
-    char buf[24];
-    size_t n = strlen(s);
-    if ((int)n > max_chars) {
-        memcpy(buf, s, (size_t)max_chars - 1);
-        buf[max_chars - 1] = '.';
-        buf[max_chars] = 0;
-        s = buf;
-    }
-    text(x, y, s, c);
-}
-
 static float wave(uint32_t now, uint32_t period_ms)
 {
     return 0.5f + 0.5f * sinf(2.0f * (float)M_PI * (float)(now % period_ms) / (float)period_ms);
-}
-
-// Small 4-point sparkle.
-static void sparkle(int x, int y, rgb_t c, float a)
-{
-    px_blend(x, y, c, a);
-    px_blend(x - 1, y, c, a * 0.7f);
-    px_blend(x + 1, y, c, a * 0.7f);
-    px_blend(x, y - 1, c, a * 0.7f);
-    px_blend(x, y + 1, c, a * 0.7f);
-    px_blend(x - 2, y, c, a * 0.3f);
-    px_blend(x + 2, y, c, a * 0.3f);
-    px_blend(x, y - 2, c, a * 0.3f);
-    px_blend(x, y + 2, c, a * 0.3f);
-}
-
-static void heart(int x, int y, rgb_t c)
-{
-    static const uint8_t rows[5] = {0x36, 0x7F, 0x7F, 0x3E, 0x1C}; // 7 wide
-    for (int r = 0; r < 5; r++)
-        for (int i = 0; i < 7; i++)
-            if (rows[r] & (0x40 >> i)) px(x + i, y + r, c);
-    px(x + 3, y + 5, c);
 }
 
 // Lamp Lumi mirrors: the one showing the most urgent signal, else lamp 1.
@@ -142,9 +178,10 @@ static int focus_lamp(const ksui_view_t *v)
     return l >= 0 && l < KSB_MAX_LAMPS ? l : 0;
 }
 
-static rgb_t body_color(const ksui_view_t *v, uint32_t now, bool *asleep)
+static rgb_t lamp_body_color(const ksui_view_t *v, int lamp, uint32_t now, bool *asleep)
 {
-    const ksb_scene_t *s = &v->shown[focus_lamp(v)];
+    if (lamp < 0 || lamp >= KSB_MAX_LAMPS) lamp = focus_lamp(v);
+    const ksb_scene_t *s = &v->shown[lamp];
     uint8_t r, g, b;
     ksb_scene_rgb(s, &r, &g, &b);
     rgb_t c = {r, g, b};
@@ -152,7 +189,7 @@ static rgb_t body_color(const ksui_view_t *v, uint32_t now, bool *asleep)
     *asleep = s->kind == KSB_SCENE_OFF || mx < 8;
     if (*asleep) return (rgb_t){62, 68, 92};
     // Keep the hue but make it readable on a tiny screen.
-    float k = mx < 150 ? 150.0f / mx : 1.0f;
+    float k = mx < 165 ? 165.0f / mx : 1.0f;
     c.r = (uint8_t)fminf(255, c.r * k);
     c.g = (uint8_t)fminf(255, c.g * k);
     c.b = (uint8_t)fminf(255, c.b * k);
@@ -163,123 +200,9 @@ static rgb_t body_color(const ksui_view_t *v, uint32_t now, bool *asleep)
     return c;
 }
 
-// Lumi centred at (cx0, cy0); her extras are placed relative to her.
-static void draw_lumi(const ksui_view_t *v, uint32_t now, float cx0, float cy0)
+static rgb_t body_color(const ksui_view_t *v, uint32_t now, bool *asleep)
 {
-    const ksb_model_t *m = &v->model;
-    int top = ksb_top_source(m);
-    bool needs_you = top >= 0 && m->src[top].state == KSA_SIG_NEEDS_YOU;
-    bool error = now < v->error_until_ms || (top >= 0 && m->src[top].state == KSA_SIG_ERROR);
-    bool scanning = v->link != KSUI_LINK_CONNECTED;
-    uint32_t since_ev = now - m->last_event_ms;
-    bool excited = m->last_event != KSB_EV_NONE && since_ev < 900 &&
-                   (m->last_event == KSB_EV_MANUAL || m->last_event == KSB_EV_SIGNAL);
-    bool loved = m->last_event == KSB_EV_ACK && since_ev < 1500;
-    uint32_t since_claim = now - v->claim_ms;
-    bool claiming = v->claim == KSUI_CLAIM_SEARCHING;
-    if (v->claim == KSUI_CLAIM_OK && since_claim < 2500) loved = excited = true, since_ev = since_claim % 900;
-    if ((v->claim == KSUI_CLAIM_NONE_FOUND || v->claim == KSUI_CLAIM_FULL) && since_claim < 2500) error = true;
-    scanning = scanning || claiming;
-    bool asleep;
-    rgb_t body = body_color(v, now, &asleep);
-    asleep = asleep && !scanning && !needs_you;
-
-    float bob = needs_you ? 2.0f * sinf((float)now / 90.0f) * (wave(now, 1400) > 0.5f ? 1.0f : 0.0f)
-                          : 1.5f * sinf(2.0f * (float)M_PI * (float)(now % 2400) / 2400.0f);
-    if (excited) bob -= 3.0f * (1.0f - (float)since_ev / 900.0f);
-    float cx = cx0, cy = cy0 + bob, r = 22;
-    int ax = (int)cx0, ay = (int)cy0; // anchor for extras (doesn't bob)
-
-    // halo
-    float halo = asleep ? 0.10f : needs_you ? 0.25f + 0.45f * wave(now, 900) : 0.22f;
-    disc(cx, cy, r + 7, body, halo * 0.5f);
-    disc(cx, cy, r + 4, body, halo);
-
-    // antenna cord + bulb
-    rgb_t bulb = scanning ? mix(BG, (rgb_t){80, 140, 255}, wave(now, 1000) > 0.5f ? 1.0f : 0.25f)
-               : error ? (rgb_t){255, 70, 70}
-               : needs_you ? AMBER
-               : (rgb_t){90, 230, 130};
-    for (int y = (int)(cy - r - 6); y < (int)(cy - r + 2); y++) px(ax, y, DIM);
-    disc(cx, cy - r - 8, 2.6f, bulb, 1.0f);
-
-    // body + little feet + soft top highlight
-    disc(cx - 9, cy + r - 1, 4, mix(body, BG, 0.35f), 1.0f);
-    disc(cx + 9, cy + r - 1, 4, mix(body, BG, 0.35f), 1.0f);
-    disc(cx, cy, r, body, 1.0f);
-    disc(cx - 7, cy - 9, 6, (rgb_t){255, 255, 255}, 0.18f);
-
-    // face
-    uint8_t lum = (uint8_t)((body.r * 3 + body.g * 6 + body.b) / 10);
-    rgb_t ink = lum > 40 ? (rgb_t){22, 20, 34} : (rgb_t){235, 235, 250};
-    int ey = (int)(cy - 3);
-    int look = scanning ? ((now / 900) % 2 ? 2 : -2) : 0;
-    bool blink = (now % 3700) < 130;
-    if (asleep || blink) {
-        rect((int)cx - 11, ey + 1, 6, 1, ink);
-        rect((int)cx + 5, ey + 1, 6, 1, ink);
-    } else {
-        float ry = needs_you || excited ? 4.5f : 3.5f;
-        ellipse(cx - 8 + look, (float)ey, 2.6f, ry, ink);
-        ellipse(cx + 8 + look, (float)ey, 2.6f, ry, ink);
-        px((int)cx - 8 + look, ey - 2, (rgb_t){255, 255, 255});
-        px((int)cx + 8 + look, ey - 2, (rgb_t){255, 255, 255});
-    }
-    // cheeks
-    disc(cx - 13, cy + 4, 2.4f, (rgb_t){255, 120, 160}, 0.55f);
-    disc(cx + 13, cy + 4, 2.4f, (rgb_t){255, 120, 160}, 0.55f);
-
-    // mouth
-    int my = (int)(cy + 6);
-    if (needs_you) {
-        ellipse(cx, (float)my + 1, 3.0f, 3.0f, ink);
-    } else if (error) {
-        for (int i = -4; i <= 4; i++) px((int)cx + i, my + 2 - (4 - abs(i)) / 2, ink);
-    } else if (asleep || scanning) {
-        ellipse(cx, (float)my + 1, 1.6f, 1.6f, ink);
-    } else {
-        for (int i = -4; i <= 4; i++) px((int)cx + i, my + (16 - i * i) / 8, ink);
-        if (excited) rect((int)cx - 2, my + 1, 5, 1, ink);
-    }
-
-    // extras
-    if (asleep) {
-        for (int k = 0; k < 2; k++) {
-            uint32_t t = (now + k * 1100) % 2200;
-            float a = 1.0f - (float)t / 2200.0f;
-            char z[2] = {'z', 0};
-            int zx = ax + 20 + k * 6 + (int)(t / 300), zy = ay - 18 - k * 8 - (int)(t / 180);
-            if (a > 0.2f) text(zx, zy, z, mix(BG, DIM, a));
-        }
-    }
-    if (needs_you && wave(now, 700) > 0.4f) {
-        rect(ax + 26, ay - 34, 3, 12, AMBER);
-        rect(ax + 26, ay - 20, 3, 3, AMBER);
-    }
-    if (excited) {
-        float a = 1.0f - (float)since_ev / 900.0f;
-        float spin = (float)since_ev / 250.0f;
-        for (int k = 0; k < 4; k++) {
-            float ang = spin + (float)k * (float)M_PI / 2.0f;
-            sparkle((int)(cx + cosf(ang) * 31), (int)(cy + sinf(ang) * 27), (rgb_t){255, 255, 220}, a);
-        }
-    }
-    if (loved) heart(ax + 22, (int)((float)ay - 30 - (float)since_ev / 150.0f), (rgb_t){255, 110, 150});
-    if (claiming && wave(now, 800) > 0.3f) text(ax + 24, ay - 34, "?", (rgb_t){80, 140, 255});
-}
-
-static void scene_label(const ksb_scene_t *s, char *out, size_t n)
-{
-    static const char *fx[9] = {"rainbow", "rgb fade", "red", "green", "blue", "yellow", "cyan", "purple", "white"};
-    switch (s->kind) {
-    case KSB_SCENE_OFF: snprintf(out, n, "off"); break;
-    case KSB_SCENE_RGB: snprintf(out, n, "#%02X%02X%02X %u%%", s->r, s->g, s->b, s->bright); break;
-    case KSB_SCENE_EFFECT:
-        snprintf(out, n, "fx %s", (s->effect >= 0x82 && s->effect <= 0x8A) ? fx[s->effect - 0x82] : "?");
-        break;
-    case KSB_SCENE_WHITE: snprintf(out, n, "white %u", s->white); break;
-    default: out[0] = 0;
-    }
+    return lamp_body_color(v, focus_lamp(v), now, asleep);
 }
 
 static rgb_t scene_swatch(const ksb_scene_t *s)
@@ -287,70 +210,6 @@ static rgb_t scene_swatch(const ksb_scene_t *s)
     uint8_t r, g, b;
     ksb_scene_rgb(s, &r, &g, &b);
     return (rgb_t){r, g, b};
-}
-
-static void draw_lamp_row(const ksui_view_t *v, int x0, int y, uint32_t now)
-{
-    if (v->n_lamps == 0) {
-        text(x0, y, "no lamp yet", DIM);
-        return;
-    }
-    for (int l = 0; l < v->n_lamps && l < KSB_MAX_LAMPS; l++) {
-        int x = x0 + l * 19;
-        char digit[2] = {(char)('1' + l), 0};
-        text(x, y, digit, DIM);
-        rgb_t ring = v->lamps[l].link == KSUI_LINK_CONNECTED ? (rgb_t){90, 230, 130}
-                   : mix(BG, (rgb_t){80, 140, 255}, wave(now + (uint32_t)l * 250, 1000) > 0.5f ? 1.0f : 0.3f);
-        rect(x + 7, y - 1, 9, 9, ring);
-        rect(x + 8, y, 7, 7, BG);
-        rect(x + 9, y + 1, 5, 5, scene_swatch(&v->shown[l]));
-    }
-}
-
-static bool draw_claim(const ksui_view_t *v, int x0, int y0, uint32_t now)
-{
-    const int y1 = y0 + 10;
-    uint32_t since = now - v->claim_ms;
-    char buf[24];
-    if (v->button_held_ms >= KSUI_HOLD_FORGET_MS) {
-        text(x0, y0, "let go to", (rgb_t){255, 70, 70});
-        text(x0, y1, "FORGET ALL", (rgb_t){255, 70, 70});
-        return true;
-    }
-    if (v->button_held_ms >= KSUI_HOLD_CLAIM_MS) {
-        text(x0, y0, "let go to", AMBER);
-        text(x0, y1, "add a lamp", TEXT);
-        return true;
-    }
-    switch (v->claim) {
-    case KSUI_CLAIM_SEARCHING:
-        text(x0, y0, "hold a lamp", AMBER);
-        text(x0, y1, "close by...", TEXT);
-        return true;
-    case KSUI_CLAIM_OK:
-        if (since > 4000) return false;
-        snprintf(buf, sizeof buf, "lamp %d!", v->claim_slot + 1);
-        text(x0, y0, buf, (rgb_t){90, 230, 130});
-        text_clip(x0, y1, v->lamps[v->claim_slot < KSB_MAX_LAMPS ? v->claim_slot : 0].name, 12, DIM);
-        return true;
-    case KSUI_CLAIM_NONE_FOUND:
-        if (since > 4000) return false;
-        text(x0, y0, "no new lamp", (rgb_t){255, 70, 70});
-        text(x0, y1, "found nearby", DIM);
-        return true;
-    case KSUI_CLAIM_FULL:
-        if (since > 4000) return false;
-        text(x0, y0, "all 4 lamps", (rgb_t){255, 70, 70});
-        text(x0, y1, "claimed", DIM);
-        return true;
-    case KSUI_CLAIM_FORGOT:
-        if (since > 4000) return false;
-        text(x0, y0, "forgot lamps", AMBER);
-        text(x0, y1, "& devboxes", DIM);
-        return true;
-    default:
-        return false;
-    }
 }
 
 // Used sources, most urgent first. Returns the count.
@@ -370,113 +229,444 @@ static int sources_by_urgency(const ksb_model_t *m, int order[KSB_MAX_SOURCES])
     return n;
 }
 
-static void draw_source_row(const ksui_view_t *v, const ksb_source_t *s, int src_index, int x0, int y,
-                            int max_chars, uint32_t now)
+// =============================================================================
+// REWORKED DISTANCE-READABLE UI:
+//   1. Full-screen color flash + giant high-contrast symbol on any update
+//   2. Big text-free Lumi filling the screen otherwise
+// =============================================================================
+
+typedef enum {
+    ICON_NONE,
+    ICON_BANG,      // !  needs-you
+    ICON_CHECK,     // v  done / claimed
+    ICON_CROSS,     // X  error / bad frame / claim failed
+    ICON_HEART,     // <3 ack
+    ICON_WORK,      // .. working
+    ICON_SPARK,     // *  manual color / remote change
+    ICON_SLEEP,     // Z  power off / idle
+    ICON_SEARCH,    // ?  claiming / searching
+} flash_icon_t;
+
+static void draw_giant_icon(flash_icon_t ic, float cx, float cy, float s, rgb_t ink, uint32_t now)
 {
-    rgb_t c = s->acked ? STATE_COLORS[0] : STATE_COLORS[s->state < KSA_SIG_COUNT ? s->state : 0];
-    bool blink = !s->acked && s->state == KSA_SIG_NEEDS_YOU && wave(now, 600) < 0.35f;
-    if (!blink) rect(x0, y + 1, 5, 5, c);
-    int lamp = ksb_source_lamp(&v->model, src_index);
-    char tag[2] = {lamp >= 0 ? (char)('1' + lamp) : '*', 0};
-    if (v->n_lamps > 1) {
-        text(x0 + 8, y, tag, DIM);
-        text_clip(x0 + 16, y, s->name, max_chars - 1, s->acked ? DIM : TEXT);
+    switch (ic) {
+    case ICON_BANG:
+        capsule(cx, cy - 23.0f * s, cx, cy + 5.0f * s, 6.0f * s, ink, 1.0f);
+        disc(cx, cy + 21.0f * s, 6.5f * s, ink, 1.0f);
+        break;
+    case ICON_CHECK:
+        capsule(cx - 18.0f * s, cy + 2.0f * s, cx - 4.0f * s, cy + 16.0f * s, 5.5f * s, ink, 1.0f);
+        capsule(cx - 4.0f * s, cy + 16.0f * s, cx + 20.0f * s, cy - 16.0f * s, 5.5f * s, ink, 1.0f);
+        break;
+    case ICON_CROSS:
+        capsule(cx - 16.0f * s, cy - 16.0f * s, cx + 16.0f * s, cy + 16.0f * s, 5.5f * s, ink, 1.0f);
+        capsule(cx - 16.0f * s, cy + 16.0f * s, cx + 16.0f * s, cy - 16.0f * s, 5.5f * s, ink, 1.0f);
+        break;
+    case ICON_HEART: {
+        float d = 9.0f * s, r = 10.8f * s, y0 = cy - 7.5f * s;
+        float r_s2 = r * 0.70710678f, r_2 = r * 1.41421356f;
+        int reach = (int)(d + r_2 + 3.0f);
+        for (int y = (int)(y0 - r - 2); y <= (int)(y0 + reach); y++) {
+            for (int x = (int)(cx - reach); x <= (int)(cx + reach); x++) {
+                float ax = fabsf((x + 0.5f) - cx);
+                float dy = (y + 0.5f) - y0;
+                float dist;
+                if (dy >= r_s2) {
+                    dist = ((ax - d) + dy - r_2) * 0.70710678f;
+                } else if (dy >= 0.0f && ax <= d) {
+                    dist = -r;
+                } else {
+                    dist = sqrtf((ax - d) * (ax - d) + dy * dy) - r;
+                }
+                float cov = 0.5f - dist;
+                if (cov > 0.0f) px_blend(x, y, ink, cov > 1.0f ? 1.0f : cov);
+            }
+        }
+        break;
+    }
+    case ICON_WORK: {
+        float phase = (float)(now % 900) / 900.0f;
+        ring(cx, cy, (14.0f + 12.0f * phase) * s, 4.0f * s, ink, 1.0f - phase * 0.7f);
+        for (int k = -1; k <= 1; k++) {
+            float bounce = 4.0f * s * sinf(2.0f * (float)M_PI * phase - (float)k * 1.1f);
+            disc(cx + (float)k * 14.0f * s, cy + bounce, 4.8f * s, ink, 1.0f);
+        }
+        break;
+    }
+    case ICON_SPARK: {
+        float rad = (22.0f + 2.5f * wave(now, 600)) * s;
+        int ir = (int)(rad + 2.0f);
+        for (int y = (int)cy - ir; y <= (int)cy + ir; y++) {
+            for (int x = (int)cx - ir; x <= (int)cx + ir; x++) {
+                float ax = fabsf((x + 0.5f) - cx) / rad;
+                float ay = fabsf((y + 0.5f) - cy) / rad;
+                float v = powf(ax, 0.58f) + powf(ay, 0.58f);
+                float cov = (1.0f - v) * rad * 0.55f + 0.5f;
+                if (cov > 0.0f) px_blend(x, y, ink, cov > 1.0f ? 1.0f : cov);
+            }
+        }
+        break;
+    }
+    case ICON_SLEEP:
+        capsule(cx - 13.0f * s, cy - 15.0f * s, cx + 13.0f * s, cy - 15.0f * s, 4.5f * s, ink, 1.0f);
+        capsule(cx + 13.0f * s, cy - 15.0f * s, cx - 13.0f * s, cy + 15.0f * s, 4.5f * s, ink, 1.0f);
+        capsule(cx - 13.0f * s, cy + 15.0f * s, cx + 13.0f * s, cy + 15.0f * s, 4.5f * s, ink, 1.0f);
+        break;
+    case ICON_SEARCH: {
+        float p1 = (float)(now % 1000) / 1000.0f;
+        float p2 = (float)((now + 500) % 1000) / 1000.0f;
+        ring(cx, cy, (8.0f + 22.0f * p1) * s, 3.8f * s, ink, 1.0f - p1);
+        ring(cx, cy, (8.0f + 22.0f * p2) * s, 3.8f * s, ink, 1.0f - p2);
+        disc(cx, cy, 6.5f * s, ink, 1.0f);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// Full-screen BOOT hold gauge: fills the entire screen from bottom to top so
+// you can tell when 3 s (add lamp = amber) and 10 s (forget all = red) are hit
+// even with your thumb on the button.
+static void draw_button_hold_screen(const ksui_view_t *v, uint32_t now)
+{
+    uint32_t held = v->button_held_ms;
+    bool forget = held >= KSUI_HOLD_FORGET_MS;
+    bool claim  = held >= KSUI_HOLD_CLAIM_MS;
+    rgb_t col = forget ? RED : AMBER;
+
+    if (claim) {
+        // Threshold reached: strobe the entire screen in Amber (3s) or Red (10s)!
+        bool hi = wave(now, forget ? 280 : 420) > 0.35f;
+        rgb_t bg = hi ? col : mix(BG, col, 0.25f);
+        rect(0, 0, s_w, s_h, bg);
+        if (!hi) border(7, col, 1.0f);
+        rgb_t ink = hi ? contrast_ink(col) : col;
+        float cx = s_w * 0.5f, cy = v->portrait ? s_h * 0.38f : s_h * 0.5f;
+        if (forget) {
+            draw_giant_icon(ICON_CROSS, cx, cy, v->portrait ? 0.9f : 0.75f, ink, now);
+        } else {
+            capsule(cx - 16, cy, cx + 16, cy, 5.0f, ink, 1.0f);
+            capsule(cx, cy - 16, cx, cy + 16, 5.0f, ink, 1.0f);
+        }
+        if (v->portrait) {
+            const char *lbl = forget ? "RST" : "ADD";
+            text_scale((s_w - 3 * 18) / 2, s_h - 42, lbl, 3, ink);
+        }
+        return;
+    }
+
+    // Rising fill toward 3 s
+    float frac = (float)held / (float)KSUI_HOLD_CLAIM_MS;
+    if (frac > 1.0f) frac = 1.0f;
+    int fill_h = (int)(frac * (float)s_h);
+    rect(0, 0, s_w, s_h, BG);
+    rect(0, s_h - fill_h, s_w, fill_h, mix(BG, AMBER, 0.85f));
+    border(4, AMBER, 0.8f);
+}
+
+// Render a full-screen color flash with strobe inversion and a giant icon.
+static void draw_full_flash(const ksui_view_t *v, rgb_t c, flash_icon_t ic, int lamp_idx,
+                            uint32_t elapsed_ms, uint32_t dur_ms, uint32_t now)
+{
+    c = boost_vivid(c);
+    // High-visibility strobe: alternate full-screen flood and framed contrast beat
+    float p = wave(elapsed_ms, 460);
+    bool full_flood = p > 0.34f;
+    float fade = dur_ms > 0 && elapsed_ms + 320 > dur_ms
+               ? (float)(dur_ms - elapsed_ms) / 320.0f : 1.0f;
+    if (fade < 0.15f) fade = 0.15f;
+
+    rgb_t bg = full_flood ? mix(BG, c, fade) : mix(BG, c, 0.25f * fade);
+    rect(0, 0, s_w, s_h, bg);
+    if (full_flood) {
+        border(4, (rgb_t){255, 255, 255}, 0.25f * fade);
     } else {
-        text_clip(x0 + 8, y, s->name, max_chars, s->acked ? DIM : TEXT);
+        border(7, c, fade);
     }
-}
 
-static rgb_t link_dot(const ksui_view_t *v, uint32_t now)
-{
-    return v->link == KSUI_LINK_CONNECTED ? (rgb_t){90, 230, 130}
-         : mix(BG, (rgb_t){80, 140, 255}, wave(now, 1000) > 0.5f ? 1.0f : 0.3f);
-}
+    rgb_t ink = full_flood ? contrast_ink(c) : mix(c, (rgb_t){255, 255, 255}, 0.45f);
+    bool has_lamp_tag = v->n_lamps > 1 && lamp_idx >= 0 && lamp_idx < KSB_MAX_LAMPS;
 
-static const char *status_word(const ksui_view_t *v)
-{
-    return v->link == KSUI_LINK_CONNECTED ? "linked"
-         : v->n_lamps == 0 ? "hold BOOT"
-         : v->link == KSUI_LINK_SCANNING ? "searching" : "waking up";
-}
-
-// Portrait, 80 x 160, top = USB plug end (away from you): lamps and link dot
-// on top, Lumi big in the upper half, then the headline and the agent list.
-static void draw_portrait(const ksui_view_t *v, uint32_t now)
-{
-    const ksb_model_t *m = &v->model;
-    draw_lamp_row(v, 2, 3, now); // each lamp's ring already shows its link
-    draw_lumi(v, now, 40, 52);
-
-    const int x0 = 3;
-    if (!draw_claim(v, x0, 86, now)) {
-        int top = ksb_top_source(m);
-        if (top >= 0 && m->src[top].state >= KSA_SIG_DONE) {
-            text_clip(x0, 86, m->src[top].name, 12, STATE_COLORS[m->src[top].state]);
-            text(x0, 96, ksb_state_name(m->src[top].state), DIM);
-        } else {
-            text(x0, 86, status_word(v), TEXT);
-            text(x0, 96, v->transport ? v->transport : "", DIM);
+    if (v->portrait) {
+        float cy = has_lamp_tag ? s_h * 0.39f : s_h * 0.50f;
+        draw_giant_icon(ic, s_w * 0.5f, cy, 1.05f, ink, now);
+        if (has_lamp_tag) {
+            char d[2] = {(char)('1' + lamp_idx), 0};
+            float by = s_h - 32.0f;
+            capsule(s_w * 0.5f - 6.0f, by, s_w * 0.5f + 6.0f, by, 15.5f, ink, 1.0f);
+            text_scale((s_w - 15) / 2, (int)by - 10, d, 3, bg);
+        }
+    } else {
+        float cx = has_lamp_tag ? s_w * 0.38f : s_w * 0.50f;
+        draw_giant_icon(ic, cx, s_h * 0.50f, 0.85f, ink, now);
+        if (has_lamp_tag) {
+            char d[2] = {(char)('1' + lamp_idx), 0};
+            float bx = s_w - 32.0f, by = s_h * 0.50f;
+            capsule(bx - 4.0f, by, bx + 4.0f, by, 15.5f, ink, 1.0f);
+            text_scale((int)bx - 7, (int)by - 10, d, 3, bg);
         }
     }
-    rect(x0, 107, s_w - 2 * x0, 1, RULE);
+}
 
-    int order[KSB_MAX_SOURCES];
-    int n = sources_by_urgency(m, order);
-    if (n == 0) {
-        char label[24];
-        scene_label(&v->shown[0], label, sizeof label);
-        text_clip(x0, 112, label, 12, TEXT);
-        int lamps = v->n_lamps ? v->n_lamps : 1, w = (s_w - 2 * x0 - 2) / lamps;
-        rect(x0, 124, s_w - 2 * x0, 6, RULE);
-        for (int l = 0; l < lamps; l++) rect(x0 + 1 + l * w, 125, w - (l < lamps - 1 ? 1 : 0), 4, scene_swatch(&v->shown[l]));
-        text(x0, 138, "no agents", DIM);
-        return;
+// Check if an update flash (button hold, claim, or model event) should take
+// over the screen right now. Returns true if drawn.
+static bool maybe_draw_update_flash(const ksui_view_t *v, uint32_t now)
+{
+    if (v->button_held_ms > 0) {
+        draw_button_hold_screen(v, now);
+        return true;
     }
-    int rows = n > 5 ? 4 : n;
-    for (int k = 0; k < rows; k++) draw_source_row(v, &m->src[order[k]], order[k], x0, 111 + k * 10, 10, now);
-    if (n > 5) {
-        char more[24];
-        snprintf(more, sizeof more, "+%d more", n - 4);
-        text(x0 + 8, 151, more, DIM);
+
+    uint32_t since_claim = now - v->claim_ms;
+    switch (v->claim) {
+    case KSUI_CLAIM_SEARCHING:
+        draw_full_flash(v, BLUE, ICON_SEARCH, v->claim_slot, now % 2000, 0, now);
+        return true;
+    case KSUI_CLAIM_OK:
+        if (since_claim < 3200) {
+            draw_full_flash(v, GREEN, ICON_CHECK, v->claim_slot, since_claim, 3200, now);
+            return true;
+        }
+        break;
+    case KSUI_CLAIM_NONE_FOUND:
+    case KSUI_CLAIM_FULL:
+        if (since_claim < 3200) {
+            draw_full_flash(v, RED, ICON_CROSS, -1, since_claim, 3200, now);
+            return true;
+        }
+        break;
+    case KSUI_CLAIM_FORGOT:
+        if (since_claim < 3200) {
+            draw_full_flash(v, AMBER, ICON_SPARK, -1, since_claim, 3200, now);
+            return true;
+        }
+        break;
+    default:
+        break;
+    }
+
+    const ksb_model_t *m = &v->model;
+    if (now < v->error_until_ms) {
+        uint32_t rem = v->error_until_ms - now;
+        uint32_t el = rem < 1500 ? 1500 - rem : 0;
+        draw_full_flash(v, RED, ICON_CROSS, -1, el, 1500, now);
+        return true;
+    }
+
+    if (m->last_event != KSB_EV_NONE) {
+        uint32_t since_ev = now - m->last_event_ms;
+        uint32_t dur = m->last_event == KSB_EV_SIGNAL ? KSUI_FLASH_MS : 1900;
+        if (since_ev < dur) {
+            rgb_t col = AMBER;
+            flash_icon_t ic = ICON_SPARK;
+            int lamp_idx = -1;
+
+            switch (m->last_event) {
+            case KSB_EV_SIGNAL: {
+                int si = m->last_event_src;
+                if (si >= 0 && si < KSB_MAX_SOURCES && m->src[si].used) {
+                    const ksb_source_t *s = &m->src[si];
+                    uint8_t st = s->state < KSA_SIG_COUNT ? s->state : 0;
+                    col = s->styled ? (rgb_t){s->r, s->g, s->b} : STATE_COLORS[st];
+                    ic = st == KSA_SIG_NEEDS_YOU ? ICON_BANG
+                       : st == KSA_SIG_ERROR     ? ICON_CROSS
+                       : st == KSA_SIG_DONE      ? ICON_CHECK
+                       : st == KSA_SIG_WORKING   ? ICON_WORK
+                                                 : ICON_SLEEP;
+                    lamp_idx = ksb_source_lamp(m, si);
+                } else {
+                    col = CYAN;
+                    ic = ICON_SLEEP;
+                }
+                break;
+            }
+            case KSB_EV_ACK:
+                col = PINK;
+                ic = ICON_HEART;
+                break;
+            case KSB_EV_MANUAL: {
+                bool asleep = false;
+                int ml = (m->last_event_src >= 0 && m->last_event_src < KSB_MAX_LAMPS) ? m->last_event_src : -1;
+                col = lamp_body_color(v, ml, now, &asleep);
+                ic = asleep ? ICON_SLEEP : ICON_SPARK;
+                lamp_idx = ml;
+                break;
+            }
+            case KSB_EV_BAD:
+                col = RED;
+                ic = ICON_CROSS;
+                break;
+            default:
+                break;
+            }
+            draw_full_flash(v, col, ic, lamp_idx, since_ev, dur, now);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Chunky lamp strip: wide color bars at the edge of the screen framed by a
+// dark border so they pop against Lumi's full-bleed body color.
+static void draw_chunky_lamp_strip(const ksui_view_t *v, uint32_t now)
+{
+    int n = v->n_lamps > 0 ? v->n_lamps : 1;
+    if (n > KSB_MAX_LAMPS) n = KSB_MAX_LAMPS;
+    int pad = 2, gap = 3, thick = 8;
+    if (v->portrait) {
+        rect(0, 0, s_w, pad * 2 + thick, BG);
+        int total_w = s_w - 2 * pad - (n - 1) * gap;
+        int bw = total_w / n;
+        for (int l = 0; l < n; l++) {
+            int x = pad + l * (bw + gap);
+            bool connected = v->n_lamps > 0 && v->lamps[l].link == KSUI_LINK_CONNECTED;
+            rgb_t c = connected ? boost_vivid(scene_swatch(&v->shown[l]))
+                                : mix(BG, BLUE, wave(now + (uint32_t)l * 250, 900) > 0.45f ? 1.0f : 0.25f);
+            if (v->n_lamps > 0 && v->shown[l].kind == KSB_SCENE_OFF && connected) c = (rgb_t){52, 58, 82};
+            rect(x, pad, bw, thick, c);
+        }
+    } else {
+        rect(0, 0, pad * 2 + thick, s_h, BG);
+        int total_h = s_h - 2 * pad - (n - 1) * gap;
+        int bh = total_h / n;
+        for (int l = 0; l < n; l++) {
+            int y = pad + l * (bh + gap);
+            bool connected = v->n_lamps > 0 && v->lamps[l].link == KSUI_LINK_CONNECTED;
+            rgb_t c = connected ? boost_vivid(scene_swatch(&v->shown[l]))
+                                : mix(BG, BLUE, wave(now + (uint32_t)l * 250, 900) > 0.45f ? 1.0f : 0.25f);
+            if (v->n_lamps > 0 && v->shown[l].kind == KSB_SCENE_OFF && connected) c = (rgb_t){52, 58, 82};
+            rect(pad, y, thick, bh, c);
+        }
     }
 }
 
-static void draw_panel(const ksui_view_t *v, uint32_t now)
+// Chunky agent pills: large color blocks for active sources framed by BG.
+static void draw_chunky_agent_pills(const ksui_view_t *v, uint32_t now)
+{
+    int order[KSB_MAX_SOURCES];
+    int n = sources_by_urgency(&v->model, order);
+    if (n == 0) return;
+    int show = n > 4 ? 4 : n;
+    int pad = 2, gap = 3, thick = 9;
+    if (v->portrait) {
+        int y = s_h - pad - thick;
+        rect(0, y - pad, s_w, pad * 2 + thick, BG);
+        int total_w = s_w - 2 * pad - (show - 1) * gap;
+        int bw = total_w / show;
+        for (int k = 0; k < show; k++) {
+            const ksb_source_t *s = &v->model.src[order[k]];
+            rgb_t c = s->acked ? STATE_COLORS[0]
+                    : s->styled ? boost_vivid((rgb_t){s->r, s->g, s->b})
+                    : STATE_COLORS[s->state < KSA_SIG_COUNT ? s->state : 0];
+            bool pulse_off = !s->acked && s->state == KSA_SIG_NEEDS_YOU && wave(now, 600) < 0.28f;
+            rect(pad + k * (bw + gap), y, bw, thick, pulse_off ? mix(BG, c, 0.25f) : c);
+        }
+    } else {
+        int x = s_w - pad - thick;
+        rect(x - pad, 0, pad * 2 + thick, s_h, BG);
+        int total_h = s_h - 2 * pad - (show - 1) * gap;
+        int bh = total_h / show;
+        for (int k = 0; k < show; k++) {
+            const ksb_source_t *s = &v->model.src[order[k]];
+            rgb_t c = s->acked ? STATE_COLORS[0]
+                    : s->styled ? boost_vivid((rgb_t){s->r, s->g, s->b})
+                    : STATE_COLORS[s->state < KSA_SIG_COUNT ? s->state : 0];
+            bool pulse_off = !s->acked && s->state == KSA_SIG_NEEDS_YOU && wave(now, 600) < 0.28f;
+            rect(x, pad + k * (bh + gap), thick, bh, pulse_off ? mix(BG, c, 0.25f) : c);
+        }
+    }
+}
+
+// Full-Bleed Lumi ("Screen = Lumi"). Every pixel of the 80x160 / 160x80 screen
+// is Lumi's glowing body color, with giant eyes and mouth across the whole panel.
+static void draw_full_bleed_lumi_screen(const ksui_view_t *v, uint32_t now)
 {
     const ksb_model_t *m = &v->model;
-    const int x0 = 84;
-    text(x0, 3, v->transport ? v->transport : "", DIM);
-    disc(153, 6, 2.5f, link_dot(v, now), 1.0f);
+    int top = ksb_top_source(m);
+    bool needs_you = top >= 0 && m->src[top].state == KSA_SIG_NEEDS_YOU;
+    bool error = now < v->error_until_ms || (top >= 0 && m->src[top].state == KSA_SIG_ERROR);
+    bool scanning = v->link != KSUI_LINK_CONNECTED || v->claim == KSUI_CLAIM_SEARCHING;
 
-    if (!draw_claim(v, x0, 13, now)) {
-        int top = ksb_top_source(m);
-        if (top >= 0 && m->src[top].state == KSA_SIG_NEEDS_YOU) {
-            text_clip(x0, 13, m->src[top].name, 12, AMBER);
-        } else {
-            text(x0, 13, status_word(v), TEXT);
-        }
-        draw_lamp_row(v, x0, 24, now);
-    }
-    rect(x0, 34, KSUI_W - x0 - 3, 1, RULE);
+    bool asleep;
+    rgb_t body = body_color(v, now, &asleep);
+    asleep = asleep && !scanning && !needs_you && !error;
 
-    int order[KSB_MAX_SOURCES];
-    int n = sources_by_urgency(m, order);
-    if (n == 0) {
-        char label[24];
-        scene_label(&v->shown[0], label, sizeof label);
-        text_clip(x0, 40, label, 12, TEXT);
-        int lamps = v->n_lamps ? v->n_lamps : 1, w = (KSUI_W - x0 - 5) / lamps;
-        rect(x0, 51, KSUI_W - x0 - 3, 6, RULE);
-        for (int l = 0; l < lamps; l++) rect(x0 + 1 + l * w, 52, w - (l < lamps - 1 ? 1 : 0), 4, scene_swatch(&v->shown[l]));
-        text(x0, 65, "no agents", DIM);
-        return;
+    if (scanning && !needs_you && !error) {
+        body = mix((rgb_t){58, 132, 245}, (rgb_t){105, 180, 255}, wave(now, 1400));
+    } else if (needs_you) {
+        body = mix(AMBER, (rgb_t){255, 225, 110}, 0.35f * wave(now, 700));
+    } else if (error) {
+        body = mix(RED, (rgb_t){180, 25, 35}, 0.35f * (1.0f - wave(now, 700)));
     }
-    int rows = n > 4 ? 3 : n;
-    for (int k = 0; k < rows; k++) draw_source_row(v, &m->src[order[k]], order[k], x0, 38 + k * 10, 11, now);
-    if (n > 4) {
-        char more[24];
-        snprintf(more, sizeof more, "+%d more", n - 3);
-        text(x0 + 8, 68, more, DIM);
+
+    // Fill 100% of screen with Lumi's color + soft top sheen and bottom shadow
+    rect(0, 0, s_w, s_h, body);
+    rgb_t hi = mix(body, (rgb_t){255, 255, 255}, asleep ? 0.10f : 0.22f);
+    rgb_t lo = mix(body, BG, 0.28f);
+    rect(0, 0, s_w, s_h / 7, hi);
+    rect(0, s_h - s_h / 8, s_w, s_h / 8, lo);
+
+    rgb_t ink = asleep ? (rgb_t){235, 238, 250} : (rgb_t){16, 18, 28};
+    if (needs_you || error) {
+        float b_alpha = 0.35f + 0.65f * wave(now, 650);
+        border(5, ink, b_alpha * 0.85f);
+    }
+
+    if (v->n_lamps > 1 || scanning) draw_chunky_lamp_strip(v, now);
+    draw_chunky_agent_pills(v, now);
+
+    float bob = needs_you ? 4.0f * sinf((float)now / 85.0f)
+                          : 2.5f * sinf(2.0f * (float)M_PI * (float)(now % 2400) / 2400.0f);
+    float cx = s_w * 0.5f, cy = s_h * 0.52f + bob;
+    float s = v->portrait ? 1.0f : 0.80f;
+
+    float ey = cy - 13.0f * s;
+    float ex = 19.5f * s;
+    float look = scanning ? ((now / 850) % 2 ? 4.5f * s : -4.5f * s) : 0.0f;
+    bool blink = (now % 3700) < 140;
+
+    if (asleep || blink) {
+        capsule(cx - ex - 7.5f * s, ey, cx - ex + 7.5f * s, ey, 2.8f * s, ink, 1.0f);
+        capsule(cx + ex - 7.5f * s, ey, cx + ex + 7.5f * s, ey, 2.8f * s, ink, 1.0f);
+    } else {
+        float ry = (needs_you ? 11.5f : 9.0f) * s;
+        float rx = 6.8f * s;
+        ellipse(cx - ex + look, ey, rx, ry, ink);
+        ellipse(cx + ex + look, ey, rx, ry, ink);
+        disc(cx - ex + look - 2.0f * s, ey - ry * 0.38f, 2.8f * s, (rgb_t){255, 255, 255}, 0.95f);
+        disc(cx + ex + look - 2.0f * s, ey - ry * 0.38f, 2.8f * s, (rgb_t){255, 255, 255}, 0.95f);
+        disc(cx - ex + look + 2.2f * s, ey + ry * 0.36f, 1.3f * s, (rgb_t){255, 255, 255}, 0.75f);
+        disc(cx + ex + look + 2.2f * s, ey + ry * 0.36f, 1.3f * s, (rgb_t){255, 255, 255}, 0.75f);
+    }
+
+    // Big rosy cheeks
+    rgb_t cheek = error ? (rgb_t){255, 165, 185} : (rgb_t){255, 95, 145};
+    disc(cx - 27.5f * s, cy + 7.0f * s, 7.0f * s, cheek, 0.62f);
+    disc(cx + 27.5f * s, cy + 7.0f * s, 7.0f * s, cheek, 0.62f);
+
+    // Big mouth
+    float my = cy + 15.0f * s;
+    if (needs_you) {
+        ellipse(cx, my + 2.0f * s, 7.2f * s, 8.5f * s, ink);
+    } else if (error) {
+        capsule(cx - 11.5f * s, my + 6.5f * s, cx, my - 2.0f * s, 3.0f * s, ink, 1.0f);
+        capsule(cx, my - 2.0f * s, cx + 11.5f * s, my + 6.5f * s, 3.0f * s, ink, 1.0f);
+    } else if (asleep || scanning) {
+        disc(cx, my + 2.0f * s, 4.0f * s, ink, 1.0f);
+    } else {
+        capsule(cx - 11.5f * s, my - 1.5f * s, cx, my + 6.0f * s, 3.0f * s, ink, 1.0f);
+        capsule(cx, my + 6.0f * s, cx + 11.5f * s, my - 1.5f * s, 3.0f * s, ink, 1.0f);
+    }
+
+    if (asleep) {
+        uint32_t t = now % 2200;
+        float zx = cx + 21.0f * s + (float)(t / 450);
+        float zy = cy - 34.0f * s - (float)(t / 260);
+        capsule(zx - 6.0f * s, zy - 6.5f * s, zx + 6.0f * s, zy - 6.5f * s, 2.2f * s, ink, 0.75f);
+        capsule(zx + 6.0f * s, zy - 6.5f * s, zx - 6.0f * s, zy + 6.5f * s, 2.2f * s, ink, 0.75f);
+        capsule(zx - 6.0f * s, zy + 6.5f * s, zx + 6.0f * s, zy + 6.5f * s, 2.2f * s, ink, 0.75f);
     }
 }
 
@@ -485,17 +675,11 @@ void ksui_render(uint16_t *fb, const ksui_view_t *v, uint32_t now)
     s_fb = fb;
     s_w = v->portrait ? KSUI_H : KSUI_W;
     s_h = v->portrait ? KSUI_W : KSUI_H;
-    uint16_t bg = pack(BG);
-    for (int i = 0; i < KSUI_PIXELS; i++) fb[i] = bg;
-    if (v->portrait) {
-        draw_portrait(v, now);
-    } else {
-        draw_lumi(v, now, 40, 48);
-        draw_panel(v, now);
-    }
-    int top = ksb_top_source(&v->model);
-    if (top >= 0 && v->model.src[top].state == KSA_SIG_NEEDS_YOU && wave(now, 900) > 0.5f) {
-        for (int x = 0; x < s_w; x++) { px(x, 0, AMBER); px(x, s_h - 1, AMBER); }
-        for (int y = 0; y < s_h; y++) { px(0, y, AMBER); px(s_w - 1, y, AMBER); }
-    }
+
+    // 1. Any update (signal, manual color change, ack, bad frame, claim, button hold)
+    //    flashes the ENTIRE screen with a high-contrast color + giant icon.
+    if (maybe_draw_update_flash(v, now)) return;
+
+    // 2. Otherwise, show Full-Bleed Lumi across the entire screen.
+    draw_full_bleed_lumi_screen(v, now);
 }

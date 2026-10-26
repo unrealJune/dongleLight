@@ -90,7 +90,17 @@ canvas#screen { display: block; width: 100%; aspect-ratio: 2 / 1; image-renderin
 .holdbar i { display: block; height: 100%; width: 0; background: var(--amber); }
 
 /* portrait: standing dongle, plug at the top (pointing away from you) */
+.dongle { transition: transform .28s cubic-bezier(.2,.8,.2,1), filter .28s; transform-style: preserve-3d; }
 .dongle.portrait { flex-direction: column; width: min(100%, 230px); }
+.dongle.angle-desk { transform: perspective(360px) rotateX(34deg) rotateY(-36deg) scale(0.76); }
+.dongle.angle-desk canvas#screen { filter: contrast(0.74) brightness(0.88) saturate(0.85); }
+.dongle.angle-far { transform: perspective(300px) rotateX(48deg) rotateY(-46deg) scale(0.42); }
+.dongle.angle-far canvas#screen { filter: contrast(0.62) brightness(0.82) saturate(0.80) blur(0.65px); }
+.glass { transition: transform .28s cubic-bezier(.2,.8,.2,1); }
+.glass.angle-desk { transform: perspective(220px) rotateX(34deg) rotateY(-36deg); }
+.glass.angle-desk canvas#real { filter: contrast(0.74) brightness(0.88) saturate(0.85); }
+.glass.angle-far { transform: perspective(180px) rotateX(48deg) rotateY(-46deg); }
+.glass.angle-far canvas#real { filter: contrast(0.62) brightness(0.82) saturate(0.80) blur(0.55px); }
 .dongle.portrait .plug { flex: 0 0 auto; width: 54%; aspect-ratio: 1.25 / 1; border-radius: 4px 4px 0 0; }
 .dongle.portrait .plug::before, .dongle.portrait .plug::after { top: 28%; bottom: auto; width: 13%; height: 34%; }
 .dongle.portrait .plug::before { left: 26%; } .dongle.portrait .plug::after { left: auto; right: 26%; }
@@ -212,6 +222,11 @@ canvas#real { display: block; }
         <div class="seg" role="group" aria-label="Screen orientation">
           <button data-orient="p" aria-pressed="true">portrait</button>
           <button data-orient="l" aria-pressed="false">landscape</button>
+        </div>
+        <div class="seg" role="group" aria-label="Viewing angle simulation">
+          <button data-angle="none" aria-pressed="true">straight on</button>
+          <button data-angle="desk" aria-pressed="false">50° desk angle</button>
+          <button data-angle="far" aria-pressed="false">65° + distance</button>
         </div>
       </div>
 
@@ -347,13 +362,21 @@ canvas#real { display: block; }
     }
 
     // ---- controls
+    document.querySelectorAll("[data-angle]").forEach(btn => btn.addEventListener("click", () => {
+      const a = btn.dataset.angle;
+      $("dongle").classList.toggle("angle-desk", a === "desk");
+      $("dongle").classList.toggle("angle-far", a === "far");
+      const g = document.querySelector(".glass");
+      if (g) { g.classList.toggle("angle-desk", a === "desk"); g.classList.toggle("angle-far", a === "far"); }
+      document.querySelectorAll("[data-angle]").forEach(o => o.setAttribute("aria-pressed", String(o === btn)));
+    }));
     document.querySelectorAll(".box").forEach(el => {
       const b = +el.dataset.box;
       el.querySelectorAll("[data-sig]").forEach(btn => btn.addEventListener("click", () => signal(b, +btn.dataset.sig)));
     });
-    document.querySelectorAll(".seg button").forEach(btn => btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-lamp]").forEach(btn => btn.addEventListener("click", () => {
       lampTarget = +btn.dataset.lamp;
-      document.querySelectorAll(".seg button").forEach(o => o.setAttribute("aria-pressed", String(o === btn)));
+      document.querySelectorAll("[data-lamp]").forEach(o => o.setAttribute("aria-pressed", String(o === btn)));
     }));
     const COLORS = [["orange", 255, 136, 0], ["teal", 0, 200, 180], ["rose", 255, 60, 120], ["violet", 140, 80, 255], ["lime", 150, 255, 40], ["warm white", 255, 230, 190]];
     COLORS.forEach(([n, r, g, b]) => {
