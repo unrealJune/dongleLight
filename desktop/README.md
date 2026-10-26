@@ -39,7 +39,9 @@ or exit the running app before overwriting an installation.
 ## Firmware and audio routing
 
 Flash the updated `firmware\audio` project using ESP-IDF v5.4.2 and target
-`esp32s3`. An older speaker-only image cannot supply the required return stream.
+`esp32s3`. The current host requires duplex snapshot protocol v3; older duplex
+firmware remains readable but does not provide compact acknowledgements.
+An older speaker-only image cannot supply the required return stream.
 The device exposes a 48 kHz, 16-bit speaker and mono microphone. The microphone
 contains encoded shared state, not ambient sound.
 
@@ -100,7 +102,7 @@ success, and no-lamp-found results are shared with every listening devbox.
 BLE connection and color readback. A timeout is not proof that pairing failed:
 check the shared lamp list and return audio before trying again.
 
-In-app pairing requires the updated firmware's bus snapshot version 2.
+In-app pairing requires the updated firmware's bus snapshot version 2 or newer.
 The app still supports older duplex firmware but disables Add lamp and
 explains that an update is needed. Update the app/host on **every devbox**
 when installing the new firmware: older hosts cannot decode version 2.
@@ -126,8 +128,10 @@ audio endpoint selection, startup preference and diagnostics are not shared.
 The worker waits for matching snapshot values before reporting rules saved.
 Playback completion alone does not prove delivery or BLE application.
 
-This link favors robustness over responsiveness: commands take seconds,
-snapshots can take around ten seconds, and multi-rule updates take longer.
+The duplex stream sends compact shared-state snapshots between full rule
+snapshots. Ordinary commands are confirmed by a newer dongle generation and
+retried once if no acknowledgement arrives; pairing is never retried.
+Uplink commands still take seconds, and multi-rule updates take longer.
 Initial channel admission waits up to 40 seconds. Stale state is marked in
 the UI; commands fail closed without a fresh return stream.
 

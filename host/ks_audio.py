@@ -87,8 +87,11 @@ def parse_snapshot(payload):
         lamps.append(dict(number=i + 1, name=name(length), connected=bool(flags & 2),
                           readback=bool(flags & 4), verified=bool(flags & 8)))
     marker, version = take(2)
-    if marker != 0xB1 or version not in (1, 2):
+    if marker != 0xB1 or version not in (1, 2, 3):
         raise ValueError("duplex firmware required")
+    flags = byte() if version == 3 else (1 | (2 if version == 2 else 0))
+    if flags & ~3:
+        raise ValueError("invalid snapshot flags")
     uptime, = struct.unpack("<I", take(4))
     for i in range(4):
         r, g, b, kind = take(4)
@@ -98,18 +101,20 @@ def parse_snapshot(payload):
     for ch in range(4):
         used, owner = take(2)
         channels.append(dict(channel=ch, used=bool(used), owner=owner, name=name(8)))
-    rules = []
-    for ch in range(4):
-        for provider in PROVIDERS:
-            for state in STATES:
-                r, g, b, brightness, lamp = take(5)
-                if brightness > 100 or lamp > 4:
-                    raise ValueError("invalid rule")
-                rules.append(dict(channel=ch, provider=provider, state=state,
-                                  color=f"#{r:02X}{g:02X}{b:02X}",
-                                  brightness=brightness, lamp=lamp))
+    rules = None
+    if flags & 1:
+        rules = []
+        for ch in range(4):
+            for provider in PROVIDERS:
+                for state in STATES:
+                    r, g, b, brightness, lamp = take(5)
+                    if brightness > 100 or lamp > 4:
+                        raise ValueError("invalid rule")
+                    rules.append(dict(channel=ch, provider=provider, state=state,
+                                      color=f"#{r:02X}{g:02X}{b:02X}",
+                                      brightness=brightness, lamp=lamp))
     pairing = None
-    if version == 2:
+    if flags & 2:
         state, slot = take(2)
         since, = struct.unpack("<I", take(4))
         if state >= len(PAIRING_STATES) or slot >= 4:
@@ -119,7 +124,7 @@ def parse_snapshot(payload):
         raise ValueError("unexpected snapshot tail")
     return dict(link=link, generation=gen, applied=applied, result=result,
                 uptime=uptime, sources=sources, lamps=lamps, channels=channels, rules=rules,
-                pairing=pairing)
+                pairing=pairing, snapshot_version=version)
 
 
 BIT_SAMPLES = 80
@@ -259,6 +264,7 @@ class Worker:
             raise ValueError("channel must be 0..3")
         self.latest = None
         self.last_received = 0
+        self.last_full_received = 0
         self.last_hello = 0
         self.lock = threading.Lock()
         self.changed = threading.Event()
@@ -267,18 +273,24 @@ class Worker:
                                                self.receiver.feed, self.on_error)
 
     def on_error(self, error):
+        self.changed.set()
         self.emit(dict(kind="error", message=str(error)))
 
     def on_snapshot(self, snapshot):
+        now = time.monotonic()
         with self.lock:
+            full = snapshot["rules"] is not None
+            if full:
+                self.last_full_received = now
+            elif self.latest and self.latest["rules"] is not None:
+                snapshot["rules"] = self.latest["rules"]
             self.latest = snapshot
-            self.last_received = time.monotonic()
+            self.last_received = now
         self.changed.set()
-        self.emit(dict(kind="snapshot", **snapshot))
+        if full or snapshot["rules"] is not None:
+            self.emit(dict(kind="snapshot", **snapshot))
 
     def send(self, op, args, repeat=2):
-        if op != OP_HELLO and time.monotonic() - self.last_hello > 25:
-            self.hello()
         samples = ks.render(ks.build_frame(op, args), repeat=repeat, channel=self.channel)
         pcm = array.array("h", (max(-32767, min(32767, round(x * 32767))) for x in samples))
         if sys.byteorder != "little":
@@ -289,7 +301,50 @@ class Worker:
         self.send(OP_HELLO, [ks.source_id(self.name), self.channel, *self.name.encode()])
         self.last_hello = time.monotonic()
 
+    @staticmethod
+    def _generation_after(current, previous):
+        difference = (current - previous) & 0xFFFF
+        return 0 < difference < 0x8000
+
+    def _wait_generation(self, previous, timeout=None):
+        if timeout is None:
+            version = self.latest["snapshot_version"] if self.latest else 1
+            timeout = 5 if version >= 3 else 12
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._check_audio()
+            with self.lock:
+                current = self.latest
+                fresh = time.monotonic() - self.last_received < 15
+            if current and fresh and self._generation_after(current["generation"], previous):
+                return current
+            self.changed.wait(min(0.5, max(0, deadline - time.monotonic())))
+            self.changed.clear()
+        return None
+
+    def _send_confirmed(self, op, args):
+        if self.last_hello and time.monotonic() - self.last_hello > 45:
+            previous = self.latest["generation"]
+            self.hello()
+            if self._wait_generation(previous, timeout=10) is None:
+                raise TimeoutError("Channel renewal was not acknowledged.")
+        for _ in range(2):
+            self._check_audio()
+            with self.lock:
+                previous = self.latest["generation"]
+            self.send(op, args)
+            snapshot = self._wait_generation(previous)
+            if snapshot is not None:
+                return snapshot
+        raise TimeoutError("Command was not acknowledged; check the audio link and retry.")
+
+    def _check_audio(self):
+        failure = getattr(getattr(self, "audio", None), "failed", None)
+        if failure is not None:
+            raise failure
+
     def _channel_ready(self):
+        self._check_audio()
         with self.lock:
             snapshot = self.latest
             fresh = time.monotonic() - self.last_received < 15
@@ -298,14 +353,16 @@ class Worker:
             if owner["used"]:
                 if owner["name"] != self.name or owner["owner"] != ks.source_id(self.name):
                     raise ValueError(f"Channel {self.channel} belongs to {owner['name']}; choose a free channel.")
-                return snapshot
+                if snapshot["rules"] is not None:
+                    return snapshot
         return None
 
     def ready(self, timeout=40):
         snapshot = self._channel_ready()
         if snapshot and getattr(self, "last_hello", 0) > 0:
             return snapshot
-        self.hello()
+        if time.monotonic() - self.last_hello > 10 or not self.last_hello:
+            self.hello()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             snapshot = self._channel_ready()
@@ -333,6 +390,7 @@ class Worker:
             self.send(OP_CLAIM, [])
             deadline = time.monotonic() + 40
             while time.monotonic() < deadline:
+                self._check_audio()
                 with self.lock:
                     current = self.latest
                     fresh = time.monotonic() - self.last_received < 15
@@ -353,6 +411,7 @@ class Worker:
                 self.changed.clear()
             raise TimeoutError("Pairing was not confirmed. Check the shared lamp list and return audio before trying again.")
         elif action == "rules":
+            rules_changed = False
             for rule in request["rules"]:
                 provider, state = rule["provider"], rule["state"]
                 if provider not in PROVIDERS or state not in STATES:
@@ -364,23 +423,34 @@ class Worker:
                 if any(all(r.get(k) == rule.get(k) for k in ("provider", "state", "color", "brightness", "lamp"))
                        for r in snapshot["rules"] if r["channel"] == self.channel):
                     continue
+                rules_changed = True
                 for attempt in range(3):
+                    with self.lock:
+                        previous = self.latest["generation"]
                     self.send(OP_RULE, args)
-                    deadline = time.monotonic() + 12
-                    while time.monotonic() < deadline:
-                        with self.lock:
-                            current = self.latest
-                        if any(r["channel"] == self.channel and all(
-                                r.get(k) == rule.get(k) for k in ("provider", "state", "color", "brightness", "lamp"))
-                               for r in current["rules"]):
-                            break
-                        self.changed.wait(0.5)
-                        self.changed.clear()
-                    else:
-                        if attempt == 2:
-                            raise TimeoutError("Rule was not acknowledged by the dongle; retry when return audio is live.")
-                        continue
-                    break
+                    if self._wait_generation(previous) is not None:
+                        break
+                    if attempt == 2:
+                        raise TimeoutError("Rule was not acknowledged by the dongle; retry when return audio is live.")
+            if rules_changed:
+                previous_full = self.last_full_received
+                self.hello()
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    self._check_audio()
+                    with self.lock:
+                        current = self.latest
+                        full = self.last_full_received > previous_full
+                    if full and current and all(any(
+                            r["channel"] == self.channel and all(
+                                r.get(k) == rule.get(k)
+                                for k in ("provider", "state", "color", "brightness", "lamp"))
+                            for r in current["rules"]) for rule in request["rules"]):
+                        break
+                    self.changed.wait(0.5)
+                    self.changed.clear()
+                else:
+                    raise TimeoutError("Updated rules were not confirmed in a full shared-state snapshot.")
         elif action == "signal":
             provider, state = request["provider"], request["state"]
             if provider not in PROVIDERS or state not in STATES:
@@ -391,7 +461,7 @@ class Worker:
             name = f"{self.name[:5]}{self.channel}{'C' if provider == 'copilot' else 'A'}"
             args = styled_args(state, name, rule["color"], rule["brightness"], rule["lamp"])
             args[0] = 0xE0 + self.channel * 2 + PROVIDERS.index(provider)
-            self.send(OP_STYLED, args)
+            self._send_confirmed(OP_STYLED, args)
         elif action == "preview":
             if request["provider"] not in PROVIDERS:
                 raise ValueError("unknown provider")
@@ -399,25 +469,25 @@ class Worker:
             args = styled_args(request["state"], name, request["color"],
                                int(request["brightness"]), int(request["lamp"]))
             args[0] = 0xE0 + self.channel * 2 + PROVIDERS.index(request["provider"])
-            self.send(OP_STYLED, args)
+            self._send_confirmed(OP_STYLED, args)
         elif action == "ack":
-            self.send(ks.OP_ACK, ks.lamp_mask(int(request.get("lamp", 0))))
+            self._send_confirmed(ks.OP_ACK, ks.lamp_mask(int(request.get("lamp", 0))))
         elif action == "rgb":
             brightness, lamp = int(request["brightness"]), int(request.get("lamp", 0))
             if not 0 <= brightness <= 100 or not 0 <= lamp <= 4:
                 raise ValueError("invalid brightness or lamp")
-            self.send(ks.OP_RGB, [*ks.parse_hex_color(request["color"]), brightness, *ks.lamp_mask(lamp)])
+            self._send_confirmed(ks.OP_RGB, [*ks.parse_hex_color(request["color"]), brightness, *ks.lamp_mask(lamp)])
         elif action == "off":
             lamp = int(request.get("lamp", 0))
             if not 0 <= lamp <= 4:
                 raise ValueError("invalid lamp")
-            self.send(ks.OP_POWER, [0, *ks.lamp_mask(lamp)])
+            self._send_confirmed(ks.OP_POWER, [0, *ks.lamp_mask(lamp)])
         elif action != "connect":
             raise ValueError("unknown action")
         return dict(kind="result", id=request.get("id"), action=action, ok=True,
                     message="Rules confirmed by dongle" if action == "rules" else
                     "Duplex channel confirmed" if action == "connect" else
-                    "Audio sent; check shared state for lamp readback")
+                    "Command confirmed by dongle")
 
     def close(self):
         self.audio.close()
@@ -458,9 +528,12 @@ def main():
                 except queue.Empty:
                     if getattr(worker.audio, "failed", None) is not None:
                         break
-                    if time.monotonic() - worker.last_hello >= 25:
+                    if time.monotonic() - worker.last_hello >= 45:
                         try:
+                            previous = worker.latest["generation"] if worker.latest else None
                             worker.hello()
+                            if previous is not None and worker._wait_generation(previous, timeout=10) is None:
+                                raise TimeoutError("Channel renewal was not acknowledged.")
                         except Exception as error:
                             worker.on_error(error)
                             if isinstance(error, OSError):

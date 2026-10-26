@@ -1,6 +1,8 @@
 """Duplex bus contract tests; KSBUS_HARNESS points to the compiled C harness."""
 import array
 import binascii
+from collections import deque
+import ctypes
 import json
 import math
 import os
@@ -14,6 +16,108 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 import ks_audio as bus
+import ks_winmm
+
+
+class CaptureTests(unittest.TestCase):
+    def audio(self, buffer_size=1):
+        audio = object.__new__(ks_winmm.Audio)
+        audio.capture = ctypes.c_void_p(1)
+        audio.failed = None
+        audio.headers = []
+        for i in range(8):
+            buf = ctypes.create_string_buffer(bytes([i]) * buffer_size, buffer_size)
+            header = ks_winmm.Header(ctypes.cast(buf, ctypes.c_void_p), buffer_size, buffer_size,
+                                    0, 0, 0, None, 0)
+            audio.headers.append((header, buf))
+        audio.dll = unittest.mock.Mock()
+        audio.on_error = unittest.mock.Mock()
+        audio.stop = unittest.mock.Mock()
+        return audio
+
+    def test_capture_keeps_queue_order_when_completed_buffers_wrap(self):
+        audio = self.audio()
+        received = []
+        polls = 0
+
+        def poll(_):
+            nonlocal polls
+            polls += 1
+            if polls == 1:
+                indices = range(6)
+            elif polls == 2:
+                indices = (6, 7, 0, 1)
+            else:
+                return True
+            for i in indices:
+                audio.headers[i][0].flags = 1
+                audio.headers[i][0].recorded = 1
+            return False
+
+        def requeue(handle, pointer, size):
+            pointer._obj.flags = 0
+            return 0
+
+        audio.stop.wait.side_effect = poll
+        audio.dll.waveInAddBuffer.side_effect = requeue
+
+        def callback(pcm):
+            received.extend(pcm)
+            self.assertEqual(audio.headers[pcm[0]][0].flags, 0,
+                             "Recycle capture buffers before decoding")
+
+        audio.callback = callback
+        audio._read()
+        self.assertEqual(received, [0, 1, 2, 3, 4, 5, 6, 7, 0, 1])
+        audio.on_error.assert_not_called()
+
+    def test_capture_wraparound_preserves_decodable_snapshots(self):
+        harness = os.environ["KSBUS_HARNESS"]
+        pcm = subprocess.check_output([harness, "--pcm"]) * 2
+        expected = bus.parse_snapshot(subprocess.check_output([harness]))
+        audio = self.audio(buffer_size=9600)
+        chunks = deque(pcm[offset:offset + 9600] for offset in range(0, len(pcm), 9600))
+        queued = deque(audio.headers)
+        received = []
+        receiver = bus.Receiver(received.append)
+        audio.callback = receiver.feed
+        polls = 0
+
+        def complete(_):
+            nonlocal polls
+            if not chunks:
+                return True
+            polls += 1
+            # Start near the ring's end, then complete across it after a delayed poll.
+            for _ in range(min(6 if polls == 1 else 4, len(chunks))):
+                header, buf = queued.popleft()
+                chunk = chunks.popleft()
+                ctypes.memmove(buf, chunk, len(chunk))
+                header.recorded = len(chunk)
+                header.flags = 1
+            return False
+
+        def requeue(handle, pointer, size):
+            header = pointer._obj
+            header.flags = 0
+            queued.append(next(pair for pair in audio.headers if pair[0] is header))
+            return 0
+
+        audio.stop.wait.side_effect = complete
+        audio.dll.waveInAddBuffer.side_effect = requeue
+        audio._read()
+        audio.on_error.assert_not_called()
+        self.assertEqual(received, [expected, expected])
+
+    def test_capture_stall_reports_failure_for_reconnect(self):
+        audio = self.audio()
+        audio.stop.wait.return_value = False
+        audio.callback = unittest.mock.Mock()
+        with patch.object(ks_winmm.time, "monotonic", side_effect=[0, 4]):
+            audio._read()
+        self.assertIsInstance(audio.failed, TimeoutError)
+        audio.on_error.assert_called_once_with(audio.failed)
+        audio.callback.assert_not_called()
 
 
 class BusTests(unittest.TestCase):
@@ -51,6 +155,48 @@ class BusTests(unittest.TestCase):
                         payload[:-5] + bytes([4]) + payload[-4:]):
             with self.assertRaises(ValueError):
                 bus.parse_snapshot(damaged)
+
+    def test_compact_snapshots_omit_rules_but_keep_everything_else(self):
+        full = bus.parse_snapshot(self.payload)
+        compact_payload = subprocess.check_output([self.harness, "--partial"])
+        compact = bus.parse_snapshot(compact_payload)
+        self.assertIsNone(compact["rules"])
+        self.assertEqual(len(self.payload) - len(compact_payload), 200)
+        for key in ("generation", "applied", "sources", "lamps", "channels", "pairing"):
+            self.assertEqual(compact[key], full[key])
+
+        worker = object.__new__(bus.Worker)
+        worker.latest = full
+        worker.last_full_received = 1
+        worker.last_received = 0
+        worker.lock = bus.threading.Lock()
+        worker.changed = bus.threading.Event()
+        worker.emit = unittest.mock.Mock()
+        worker.on_snapshot(compact)
+        self.assertEqual(worker.latest["rules"], full["rules"])
+        self.assertEqual(worker.last_full_received, 1)
+        worker.emit.assert_called_once()
+        full_pcm = subprocess.check_output([self.harness, "--pcm"])
+        compact_pcm = subprocess.check_output([self.harness, "--partial-pcm"])
+        self.assertLess(len(compact_pcm), len(full_pcm) * 0.6)
+
+    def test_command_retries_once_if_no_generation_ack_arrives(self):
+        worker = object.__new__(bus.Worker)
+        worker.latest = bus.parse_snapshot(self.payload)
+        worker.last_hello = bus.time.monotonic()
+        worker.lock = bus.threading.Lock()
+        worker.audio = unittest.mock.Mock(failed=None)
+        confirmed = dict(worker.latest, generation=(worker.latest["generation"] + 1) & 0xFFFF)
+        worker.send = unittest.mock.Mock()
+        worker._wait_generation = unittest.mock.Mock(side_effect=[None, confirmed])
+        self.assertEqual(worker._send_confirmed(bus.ks.OP_RGB, [1, 2, 3, 100]), confirmed)
+        self.assertEqual(worker.send.call_count, 2)
+        self.assertEqual(worker._wait_generation.call_count, 2)
+
+    def test_generation_ack_handles_wraparound(self):
+        self.assertTrue(bus.Worker._generation_after(0, 0xFFFF))
+        self.assertFalse(bus.Worker._generation_after(0xFFFF, 0))
+        self.assertFalse(bus.Worker._generation_after(7, 7))
 
     def test_pairing_does_not_reuse_a_previous_success_or_retry_automatically(self):
         worker = object.__new__(bus.Worker)
@@ -169,7 +315,7 @@ class BusTests(unittest.TestCase):
         snapshot = bus.parse_snapshot(self.payload)
         worker.ready = lambda: snapshot
         sent = []
-        worker.send = lambda op, args: sent.append((op, args))
+        worker._send_confirmed = lambda op, args: sent.append((op, args))
         for provider in bus.PROVIDERS:
             worker.execute(dict(action="signal", provider=provider, state="error"))
         self.assertEqual([args[0] for _, args in sent], [0xE0, 0xE1])
@@ -202,6 +348,72 @@ class BusTests(unittest.TestCase):
         worker.hello = lambda: hellos.append(1)
         self.assertEqual(worker.ready(timeout=0.1)["generation"], 7)
         self.assertEqual(hellos, [])
+
+    def test_stale_readiness_waits_for_return_without_resending_recent_hello(self):
+        worker = object.__new__(bus.Worker)
+        worker.name, worker.channel = "box-a", 0
+        worker.latest = bus.parse_snapshot(self.payload)
+        worker.latest["channels"][0]["owner"] = bus.ks.source_id("box-a")
+        worker.last_received = 0
+        worker.last_hello = 99
+        worker.lock = bus.threading.Lock()
+        worker.changed = unittest.mock.Mock()
+        worker.changed.wait.side_effect = lambda _: setattr(worker, "last_received", 100)
+        worker.hello = unittest.mock.Mock()
+        with patch.object(bus.time, "monotonic", return_value=100):
+            self.assertEqual(worker.ready()["generation"], 7)
+        worker.hello.assert_not_called()
+
+    def test_readiness_exits_immediately_when_capture_fails_while_waiting(self):
+        worker = object.__new__(bus.Worker)
+        worker.name, worker.channel, worker.latest = "box-a", 0, None
+        worker.last_received = 0
+        worker.last_hello = bus.time.monotonic()
+        worker.lock = bus.threading.Lock()
+        worker.changed = unittest.mock.Mock()
+        worker.audio = unittest.mock.Mock(failed=None)
+        worker.emit = unittest.mock.Mock()
+        worker.hello = unittest.mock.Mock()
+        failure = TimeoutError("Microphone capture stalled")
+
+        def fail(_):
+            worker.audio.failed = failure
+            worker.on_error(failure)
+
+        worker.changed.wait.side_effect = fail
+        with self.assertRaisesRegex(TimeoutError, "Microphone capture stalled"):
+            worker.ready()
+        worker.changed.wait.assert_called_once()
+        worker.changed.set.assert_called_once()
+        worker.hello.assert_not_called()
+
+    def test_capture_failure_aborts_confirmation_waits_without_retrying(self):
+        for action in ("claim", "rules"):
+            with self.subTest(action=action):
+                worker = object.__new__(bus.Worker)
+                worker.channel = 0
+                worker.latest = bus.parse_snapshot(subprocess.check_output([self.harness, "--pairing"]))
+                worker.last_received = bus.time.monotonic()
+                worker.lock = bus.threading.Lock()
+                worker.changed = unittest.mock.Mock()
+                worker.audio = unittest.mock.Mock(failed=None)
+                worker.emit = unittest.mock.Mock()
+                worker.ready = lambda: worker.latest
+                worker.send = unittest.mock.Mock()
+                failure = OSError("Capture endpoint disconnected")
+
+                def fail(_):
+                    worker.audio.failed = failure
+                    worker.on_error(failure)
+
+                worker.changed.wait.side_effect = fail
+                request = dict(action=action, rules=[
+                    dict(provider="copilot", state="error", color="#123456", brightness=50, lamp=1)
+                ])
+                with self.assertRaisesRegex(OSError, "Capture endpoint disconnected"):
+                    worker.execute(request)
+                worker.send.assert_called_once()
+                worker.changed.wait.assert_called_once()
 
     def test_no_return_audio_never_sends_commands(self):
         worker = object.__new__(bus.Worker)

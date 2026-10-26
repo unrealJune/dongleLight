@@ -92,13 +92,23 @@ class Audio:
         self.thread.start()
 
     def _read(self):
+        next_header = 0
+        last_buffer = time.monotonic()
         try:
             while not self.stop.wait(0.01):
-                for header, buf in self.headers:
-                    if header.flags & 1:
-                        self.callback(buf.raw[:header.recorded])
-                        header.recorded = 0
-                        check(self.dll.waveInAddBuffer(self.capture, C.byref(header), C.sizeof(header)), "Requeue capture")
+                for _ in self.headers:
+                    header, buf = self.headers[next_header]
+                    if not header.flags & 1:
+                        break
+                    # Completed buffers must follow queue order, including across wraparound.
+                    pcm = buf.raw[:header.recorded]
+                    header.recorded = 0
+                    check(self.dll.waveInAddBuffer(self.capture, C.byref(header), C.sizeof(header)), "Requeue capture")
+                    next_header = (next_header + 1) % len(self.headers)
+                    last_buffer = time.monotonic()
+                    self.callback(pcm)
+                if time.monotonic() - last_buffer > 3:
+                    raise TimeoutError("Microphone capture stalled; reconnecting audio")
         except Exception as error:
             self.failed = error
             self.on_error(error)

@@ -22,6 +22,7 @@ uint32_t ksbus_crc32(const uint8_t *data, size_t len);
 size_t ksbus_snapshot(uint8_t *out, size_t cap, const ksb_model_t *model,
                      uint8_t link, uint16_t gen, uint16_t applied, uint8_t result,
                      const ksc_lamp_info_t *lamps, int count, uint32_t uptime,
+                     uint8_t include_rules,
                      const ksbus_claim_t *claim);
 int ksbus_tx_begin(ksbus_tx_t *tx, const uint8_t *payload, size_t length);
 size_t ksbus_tx_render(ksbus_tx_t *tx, int16_t *pcm, size_t samples);

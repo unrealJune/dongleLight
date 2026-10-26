@@ -46,13 +46,15 @@ static void rs_parity(const uint8_t *data, size_t length, uint8_t parity[32])
 size_t ksbus_snapshot(uint8_t *out, size_t cap, const ksb_model_t *m,
                      uint8_t link, uint16_t gen, uint16_t applied, uint8_t result,
                      const ksc_lamp_info_t *lamps, int count, uint32_t uptime,
+                     uint8_t include_rules,
                      const ksbus_claim_t *claim)
 {
     if (cap < KSBUS_MAX_PAYLOAD) return 0;
     size_t n = ksc_status_encode(out, cap, m, link, gen, applied, result, lamps, count);
     if (!n) return 0;
     out[n++] = 0xB1;
-    out[n++] = claim ? 2 : 1;
+    out[n++] = 3;
+    out[n++] = (uint8_t)((include_rules ? 1 : 0) | (claim ? 2 : 0));
     for (int b = 0; b < 4; b++) out[n++] = (uint8_t)(uptime >> (8 * b));
     for (int l = 0; l < KSB_MAX_LAMPS; l++) {
         ksb_scene_t scene;
@@ -67,13 +69,14 @@ size_t ksbus_snapshot(uint8_t *out, size_t cap, const ksb_model_t *m,
         memcpy(out + n, m->channels[ch].name, KSA_SIGNAL_NAME_MAX);
         n += KSA_SIGNAL_NAME_MAX;
     }
-    for (int ch = 0; ch < 4; ch++)
-        for (int p = 0; p < 2; p++)
-            for (int s = 0; s < KSA_SIG_COUNT; s++) {
-                const ksb_rule_t *r = &m->rules[ch][p][s];
-                out[n++] = r->r; out[n++] = r->g; out[n++] = r->b;
-                out[n++] = r->bright; out[n++] = r->lamp;
-            }
+    if (include_rules)
+        for (int ch = 0; ch < 4; ch++)
+            for (int p = 0; p < 2; p++)
+                for (int s = 0; s < KSA_SIG_COUNT; s++) {
+                    const ksb_rule_t *r = &m->rules[ch][p][s];
+                    out[n++] = r->r; out[n++] = r->g; out[n++] = r->b;
+                    out[n++] = r->bright; out[n++] = r->lamp;
+                }
     if (claim) {
         out[n++] = claim->state;
         out[n++] = claim->slot;

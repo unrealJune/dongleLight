@@ -24,6 +24,7 @@ static const char *TAG = "ksb";
 #define VERIFY_DELAY_MS 400  // light.py waits 0.5 s before reading back
 #define QUERY_TIMEOUT_MS 1500
 #define POLL_MS 5000         // look for hand-made changes this often
+#define FULL_BUS_STATUS_MS 30000
 
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_task;
@@ -36,6 +37,8 @@ static volatile uint32_t s_button_held_ms;
 static volatile bool s_verified[KSB_MAX_LAMPS];
 static uint8_t s_force_lamps;
 static bool s_base_dirty;
+static bool s_bus_full_pending = true;
+static uint32_t s_last_full_bus_status;
 static const char *s_transport = "";
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -98,6 +101,7 @@ int ksb_bridge_audio_submit(const ksa_cmd_t *cmd, int channel)
     bool ok = allowed && (cmd->op == KSA_OP_CLAIM || ksb_apply(&s_model, cmd, now));
     if (ok) {
         s_gen++;
+        if (cmd->op == KSA_OP_HELLO) s_bus_full_pending = true;
         if (is_manual_op(cmd->op)) {
             s_force_lamps |= ksa_cmd_lamps(cmd);
             s_base_dirty = true;
@@ -153,8 +157,16 @@ size_t ksb_bridge_bus_status(uint8_t *out, size_t cap)
     bool any;
     int n = lamp_info(lamps, &any);
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    uint32_t now = now_ms();
+    bool include_rules = s_bus_full_pending ||
+                         now - s_last_full_bus_status >= FULL_BUS_STATUS_MS;
+    if (include_rules) {
+        s_bus_full_pending = false;
+        s_last_full_bus_status = now;
+    }
     size_t len = ksbus_snapshot(out, cap, &s_model, any ? 2 : 1,
-                               s_gen, s_applied, s_result, lamps, n, now_ms(), &claim);
+                               s_gen, s_applied, s_result, lamps, n, now,
+                               include_rules, &claim);
     xSemaphoreGive(s_lock);
     return len;
 }

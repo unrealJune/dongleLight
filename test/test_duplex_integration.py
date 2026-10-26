@@ -49,6 +49,7 @@ class VirtualDongle:
         self.workers = []
         self.changed = threading.Condition()
         self.drop_return = False
+        self.drop_uplinks = 0
         self.advance_pairing = pairing in ("pair", "missing")
 
     def worker(self, name, channel):
@@ -58,8 +59,6 @@ class VirtualDongle:
         def emit(message):
             with self.changed:
                 messages.append(message)
-                if message["kind"] == "snapshot":
-                    endpoint.snapshots += 1
                 self.changed.notify_all()
 
         def audio_factory(output, input_device, callback, on_error):
@@ -68,6 +67,15 @@ class VirtualDongle:
             return endpoint
 
         worker = bus.Worker(dict(name=name, channel=channel), emit, audio_factory)
+        on_snapshot = worker.on_snapshot
+
+        def count_snapshot(snapshot):
+            with self.changed:
+                endpoint.snapshots += 1
+                self.changed.notify_all()
+            on_snapshot(snapshot)
+
+        worker.receiver.callback = count_snapshot
         worker.messages = messages
         self.workers.append(worker)
         return worker
@@ -82,6 +90,9 @@ class VirtualDongle:
         return bytes(result)
 
     def exchange(self, pcm=b"", advance_ms=0):
+        if self.drop_uplinks and pcm:
+            self.drop_uplinks -= 1
+            pcm = b""
         if self.codec and pcm:
             pcm = codec_roundtrip(pcm, *self.codec)
         mono = np.frombuffer(pcm, dtype="<i2")
@@ -306,6 +317,29 @@ class DuplexIntegrationTests(unittest.TestCase):
         cable.exchange()
         self.assertGreater(worker.latest["generation"], generation)
         self.assertEqual([lamp["color"] for lamp in worker.latest["lamps"]], ["#204060"] * 4)
+
+    def test_dropped_uplink_is_retried_and_confirmed(self):
+        cable = self.cable()
+        worker = cable.worker("box-a", 0)
+        worker.execute(dict(action="connect"))
+        generation = worker.latest["generation"]
+        cable.drop_uplinks = 1
+        wait = worker._wait_generation
+        attempts = 0
+
+        def miss_first_ack(previous, timeout=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return None
+            return wait(previous, timeout)
+
+        worker._wait_generation = miss_first_ack
+        result = worker.execute(dict(action="rgb", color="#204060", brightness=100, lamp=1))
+        self.assertEqual(result["message"], "Command confirmed by dongle")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(worker.latest["lamps"][0]["color"], "#204060")
+        self.assertEqual(worker.latest["generation"], (generation + 1) & 0xFFFF)
 
 
 if __name__ == "__main__":

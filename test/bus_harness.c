@@ -11,6 +11,7 @@ static ksb_model_t duplex_model;
 static uint32_t duplex_now = 1000;
 static uint16_t duplex_generation;
 static int duplex_pairing_mode;
+static int duplex_full_pending;
 static ksbus_claim_t duplex_claim;
 static struct {
     uint8_t frame[KSA_MAX_FRAME_BYTES];
@@ -47,7 +48,10 @@ static void duplex_frame(const uint8_t *bytes, size_t length, void *context)
         duplex_generation++;
         return;
     }
-    if (ksb_apply(&duplex_model, &cmd, duplex_now)) duplex_generation++;
+    if (ksb_apply(&duplex_model, &cmd, duplex_now)) {
+        duplex_generation++;
+        if (cmd.op == KSA_OP_HELLO) duplex_full_pending = 1;
+    }
 }
 
 static uint32_t read_u32(const uint8_t *bytes)
@@ -62,6 +66,7 @@ static int duplex(int pairing_mode)
     // tone decoder, frame parser, state model, snapshot encoder, and return modem.
     static ksa_rx_t rx[KSA_MAX_CHANNELS];
     duplex_pairing_mode = pairing_mode;
+    duplex_full_pending = 1;
     duplex_claim = (ksbus_claim_t){.state = pairing_mode == 4 ? KS_CLAIM_SEARCHING : KS_CLAIM_IDLE,
                                  .since_ms = duplex_now};
     ksb_init(&duplex_model);
@@ -105,8 +110,11 @@ static int duplex(int pairing_mode)
                 ksb_set_lamp_count(&duplex_model, duplex_model.n_lamps + 1);
         }
         uint8_t payload[KSBUS_MAX_PAYLOAD];
+        uint8_t include_rules = duplex_full_pending;
+        duplex_full_pending = 0;
         size_t n = ksbus_snapshot(payload, sizeof payload, &duplex_model, 1,
                                  duplex_generation, 0, 1, lamps, duplex_model.n_lamps, duplex_now,
+                                 include_rules,
                                  pairing_mode ? &duplex_claim : NULL);
         ksbus_tx_t tx;
         if (!n || ksbus_tx_begin(&tx, payload, n)) return 6;
@@ -150,10 +158,14 @@ int main(int argc, char **argv)
     };
     uint8_t payload[KSBUS_MAX_PAYLOAD];
     ksbus_claim_t claim = {.state = KS_CLAIM_OK, .slot = 0, .since_ms = 12000};
+    uint8_t include_rules = argc <= 1 || (strcmp(argv[1], "--partial") != 0 &&
+                                          strcmp(argv[1], "--partial-pcm") != 0);
     size_t length = ksbus_snapshot(payload, sizeof payload, &model, 2, 7, 6, 5, lamps, 2, 12345,
+                                  include_rules,
                                   argc > 1 && !strcmp(argv[1], "--pairing") ? &claim : NULL);
     if (!length) return 1;
-    if (argc > 1 && (!strcmp(argv[1], "--pcm") || !strcmp(argv[1], "--frame"))) {
+    if (argc > 1 && (!strcmp(argv[1], "--pcm") || !strcmp(argv[1], "--partial-pcm") ||
+                     !strcmp(argv[1], "--frame"))) {
         ksbus_tx_t tx;
         if (ksbus_tx_begin(&tx, payload, length)) return 2;
         if (!strcmp(argv[1], "--frame")) {
