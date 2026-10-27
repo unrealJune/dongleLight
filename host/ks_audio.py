@@ -232,7 +232,7 @@ class Receiver:
             block.byteswap()
         level = sum(abs(x) for x in block) / max(1, len(block))
         self.peak = max(level, self.peak * 0.98)
-        if level > max(8, self.peak * 0.06):
+        if level > max(8, self.peak * 0.015):
             self.quiet = 0
             self.samples.extend(block)
         elif self.samples:
@@ -309,7 +309,7 @@ class Worker:
     def _wait_generation(self, previous, timeout=None):
         if timeout is None:
             version = self.latest["snapshot_version"] if self.latest else 1
-            timeout = 5 if version >= 3 else 12
+            timeout = 8 if version >= 3 else 12
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self._check_audio()

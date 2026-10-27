@@ -331,6 +331,11 @@ public sealed partial class MainWindow : Window
                         entries.Add(entry); box.Items.Add(entry.Item2);
                     }
                     int selected = entries.FindIndex(x => x.Name == wanted);
+                    if (wanted == "Windows default device")
+                    {
+                        int usb = entries.FindIndex(x => x.Name.Contains("usb uac", StringComparison.OrdinalIgnoreCase));
+                        if (usb >= 0) selected = usb;
+                    }
                     box.SelectedIndex = selected < 0 ? 0 : selected;
                 }
             }
