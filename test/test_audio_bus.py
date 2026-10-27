@@ -426,6 +426,53 @@ class BusTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             worker.ready(timeout=0.01)
 
+    def test_webrtc_devices_and_pcmu_transceiver_roundtrip(self):
+        fake_raw = [
+            {"deviceId": "default", "kind": "audioinput", "label": "Microphone (usb uac)"},
+            {"deviceId": "{0.0.1.00000000}.{cacc49fc}", "kind": "audioinput", "label": "Microphone (usb uac)"},
+            {"deviceId": "{0.0.0.00000000}.{f8fb4ef0}", "kind": "audiooutput", "label": "Speakers (usb uac)"},
+        ]
+        with patch.object(ks_winmm, "_webrtc_raw_devices", return_value=fake_raw):
+            ins, outs = ks_winmm._webrtc_catalog()
+            self.assertEqual(len(ins), 1)
+            self.assertEqual(ins[0]["id"], ks_winmm.WEBRTC_ID_BASE)
+            self.assertEqual(ins[0]["deviceId"], "{0.0.1.00000000}.{cacc49fc}")
+            self.assertEqual(outs[0]["id"], ks_winmm.WEBRTC_ID_BASE)
+            self.assertEqual(outs[0]["name"], "Speakers (usb uac)")
+
+        # Verify 48kHz -> 8kHz G.711 PCMU -> 48kHz WebRtcAudio downlink resampler decodes full snapshot
+        received = []
+        rx = bus.Receiver(received.append)
+        rtc = object.__new__(ks_winmm.WebRtcAudio)
+        rtc._hist_8k = [0] * 16
+        rtc.callback = rx.feed
+        samples_48k = array.array("h", self.pcm)
+        pcmu_stream = bytearray(ks_winmm._ULAW_ENC[s + 32768] for s in samples_48k[0::6])
+        pcmu_stream.extend(b"\xFF" * 1600)
+        for offset in range(0, len(pcmu_stream) - 160, 160):
+            rtc._process_rx_pcmu(bytes(pcmu_stream[offset:offset + 160]))
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0], bus.parse_snapshot(self.payload))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows OpenSSL DLLs required")
+    def test_webrtc_dtls_srtp_crypto_and_cert(self):
+        dtls = ks_winmm._OpenSslDtlsSrtp()
+        try:
+            self.assertEqual(len(dtls.fingerprint.split(":")), 32)
+            key = bytes(range(16))
+            salt = bytes(range(14))
+            dtls.tx_ke = dtls._derive_srtp_key(key, salt, 0x00, 16)
+            dtls.tx_ka = dtls._derive_srtp_key(key, salt, 0x01, 20)
+            dtls.tx_ks = dtls._derive_srtp_key(key, salt, 0x02, 14)
+            dtls.rx_ke = dtls.tx_ke
+            dtls.rx_ks = dtls.tx_ks
+            dtls.ready = True
+            payload = bytes(range(160))
+            pkt = dtls.encrypt_srtp(0, 42, 6720, 0x12345678, payload)
+            self.assertEqual(dtls.decrypt_srtp(pkt, 0), payload)
+        finally:
+            dtls.close()
+
 
 if __name__ == "__main__":
     unittest.main()
